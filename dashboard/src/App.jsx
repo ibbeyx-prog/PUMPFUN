@@ -137,6 +137,33 @@ export default function App() {
           <Card label="Skipped signals" value={sum.skipped} sub={`chase cap ${pct(cfg.max_chase_pct)}`} />
         </div>
 
+        <Panel title="24h reports" right={
+          <span className="text-xs text-slate-500">
+            {sum.reports ? `next in ${sum.reports.next_in_h}h · ${sum.reports.next_at}` : ""}
+          </span>
+        }>
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-slate-500">
+              <tr>{["Window", "Closed", "Win", "PnL", "Buys", "Report"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {(sum.reports?.reports || []).length === 0 && (
+                <tr><td colSpan="6" className="px-4 py-6 text-slate-500">The first report is written when 24 hours have passed. Next one {sum.reports?.next_at || "soon"}.</td></tr>
+              )}
+              {(sum.reports?.reports || []).map((r) => (
+                <tr key={r.start} className="border-t border-slate-800">
+                  <td className="px-4 py-2 text-xs text-slate-400 whitespace-nowrap">{r.start.slice(5)} → {r.end.slice(5)}</td>
+                  <td className="px-4 py-2">{r.closed}</td>
+                  <td className="px-4 py-2">{pct(r.win_rate)}</td>
+                  <td className={`px-4 py-2 ${tone(r.pnl)}`}>{sol(r.pnl)}</td>
+                  <td className="px-4 py-2 text-slate-400">{r.buys}</td>
+                  <td className="px-4 py-2 text-xs text-slate-300">{r.text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+
         {sum.lesson && (
           <div className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
             <span className="text-xs uppercase tracking-wide text-slate-500">Agent read</span>

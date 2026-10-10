@@ -11,7 +11,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY copytrader.py server.py scanner.py tune.py config.json ./
+COPY copytrader.py server.py scanner.py tune.py reports.py config.json ./
 COPY --from=web /web/dist ./dashboard/dist
 ENV DATA_DIR=/data PYTHONUNBUFFERED=1
 CMD ["python", "server.py"]

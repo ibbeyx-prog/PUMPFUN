@@ -15,6 +15,7 @@ import aiohttp
 from aiohttp import web
 
 import copytrader as ct
+import reports
 import scanner
 import tune
 
@@ -49,12 +50,22 @@ async def supervisor(app):
     session = aiohttp.ClientSession()
     asyncio.create_task(guard("manage", lambda: ENG.manage(session)))
     asyncio.create_task(guard("scan", lambda: scanner.scan_loop(ENG, session, STATUS)))
+    asyncio.create_task(guard("reports", _reports))
     # Wallet copy stays available, but entries come from the scanner.
     if os.path.exists(ct.WALLETS):
         wallets = [m["wallet"] for m in json.load(open(ct.WALLETS)) if m.get("wallet")]
         STATUS["wallets"] = len(wallets)
         if wallets:
             asyncio.create_task(guard("watch", lambda w=wallets: ct.watch(ENG, session, w)))
+
+
+async def _reports():
+    while True:
+        try:
+            reports.roll()
+        except Exception as e:
+            print("report failed:", e)
+        await asyncio.sleep(300)
 
 
 async def start_bg(app):
@@ -196,6 +207,7 @@ async def api_summary(request):
         "scan": {"at": scanner.STATE["scanned_at"], "sources": scanner.STATE["sources"]},
         "lesson": lesson,
         "agent": tune.public(),
+        "reports": reports.public(),
     })
 
 
