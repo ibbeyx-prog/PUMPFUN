@@ -5,5 +5,7 @@ wallets.json
 state.json
 agent_tune.json
 reports.json
+chat.json
+study.json
 __pycache__
 .env

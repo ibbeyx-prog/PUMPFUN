@@ -15,8 +15,10 @@ import aiohttp
 from aiohttp import web
 
 import copytrader as ct
+import chat
 import reports
 import scanner
+import skills
 import tune
 
 TOKEN = os.getenv("DASH_TOKEN", "")
@@ -207,6 +209,7 @@ async def api_summary(request):
         "scan": {"at": scanner.STATE["scanned_at"], "sources": scanner.STATE["sources"]},
         "lesson": lesson,
         "agent": tune.public(),
+        "skills": skills.public(),
         "reports": reports.public(),
     })
 
@@ -229,6 +232,67 @@ async def api_candidates(request):
         "scanned_at": scanner.STATE["scanned_at"],
         "lesson": lesson,
     })
+
+
+def chat_context():
+    rows = read_trades()
+    lesson = lessons(rows)
+    closed = []
+    for r in rows:
+        if r.get("event") != "CLOSED":
+            continue
+        sym = ""
+        for b in rows:
+            if b.get("event") == "BUY" and b.get("mint") == r.get("mint"):
+                sym = (b.get("note") or "").split(" size")[0].strip()
+                break
+        closed.append({"symbol": sym, "mint": r.get("mint"), "x": float(r.get("x") or 0),
+                       "pnl": float(r.get("sol_pnl") or 0), "note": r.get("note") or ""})
+    open_pos = []
+    for mint, p in (ENG.pos if ENG else {}).items():
+        item = {"mint": mint, "symbol": p.get("symbol") or "", "wallet": p.get("wallet"),
+                "x": p.get("last_x"), "pnl": p.get("pnl"), "age_min": (time.time() - p["t0"]) / 60}
+        item["advice"] = advise_open(item, lesson)
+        open_pos.append(item)
+    agent = tune.public()
+    reps = reports.public()
+    latest = (reps.get("reports") or [None])[0]
+    pnls = [c["pnl"] for c in closed]
+    return {
+        "pnl": round(sum(pnls), 4) if pnls else 0,
+        "closed": len(closed),
+        "win_rate": (sum(1 for p in pnls if p > 0) / len(pnls)) if pnls else None,
+        "lesson": lesson.get("text"),
+        "phase": STATUS.get("phase"),
+        "open": open_pos,
+        "closed_rows": closed[-12:],
+        "cands": [dict(c, advice=advise_candidate(c, lesson)) for c in (scanner.STATE.get("candidates") or [])],
+        "changes": agent.get("changes") or [],
+        "rules": agent.get("values") or {},
+        "report": latest,
+        "next_report": reps.get("next_at"),
+        "skills_text": skills.summary(),
+    }
+
+
+async def api_chat_get(request):
+    return web.json_response({"messages": chat.history()})
+
+
+async def api_chat_post(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = str((body or {}).get("message") or "").strip()
+    if not message:
+        return web.json_response({"error": "empty"}, status=400)
+    if len(message) > 500:
+        message = message[:500]
+    reply = chat.answer(message, chat_context())
+    chat.add("user", message)
+    chat.add("agent", reply)
+    return web.json_response({"reply": reply, "messages": chat.history()})
 
 
 async def api_wallets(request):
@@ -264,6 +328,8 @@ def make_app():
         web.get("/api/trades", api_trades),
         web.get("/api/wallets", api_wallets),
         web.get("/api/candidates", api_candidates),
+        web.get("/api/chat", api_chat_get),
+        web.post("/api/chat", api_chat_post),
         web.get("/", index),
         web.get("/favicon.ico", favicon),
     ])

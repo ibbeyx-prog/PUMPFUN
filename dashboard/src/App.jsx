@@ -7,6 +7,79 @@ const tone = (n) => (n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "tex
 const adviceTone = (label) =>
   ["Take", "Hold", "Sell"].includes(label) ? "text-emerald-400" : ["Cut", "Pass", "Skip"].includes(label) ? "text-rose-400" : "text-amber-300";
 
+function ChatDock({ token }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let stop = false;
+    fetch("/api/chat", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d) => { if (!stop) setMessages(d.messages || []); })
+      .catch(() => {});
+    return () => { stop = true; };
+  }, [open, token]);
+
+  async function send(e) {
+    e.preventDefault();
+    const message = text.trim();
+    if (!message || busy) return;
+    setText("");
+    setBusy(true);
+    setMessages((m) => [...m, { role: "user", text: message, time: "" }]);
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      const d = await r.json();
+      if (r.ok) setMessages(d.messages || []);
+      else setMessages((m) => [...m, { role: "agent", text: "I couldn't answer that.", time: "" }]);
+    } catch {
+      setMessages((m) => [...m, { role: "agent", text: "Can't reach the agent.", time: "" }]);
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="fixed bottom-4 right-4 z-20 w-[min(24rem,calc(100vw-2rem))]">
+      {open && (
+        <div className="mb-2 flex h-[28rem] flex-col rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">
+          <div className="border-b border-slate-800 px-3 py-2 text-sm font-medium">Chat with the agent</div>
+          <div className="flex-1 space-y-2 overflow-y-auto p-3 text-sm">
+            {messages.length === 0 && <div className="text-slate-500">Ask about PnL, open positions, the 24h report, or a token.</div>}
+            {messages.map((m, i) => (
+              <div key={i} className={m.role === "user" ? "text-right" : ""}>
+                <div className={`inline-block max-w-[90%] rounded-lg px-3 py-2 text-left ${m.role === "user" ? "bg-emerald-600" : "bg-slate-800 text-slate-200"}`}>
+                  {m.text}
+                </div>
+              </div>
+            ))}
+          </div>
+          <form onSubmit={send} className="flex gap-2 border-t border-slate-800 p-2">
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Ask the agent"
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+            />
+            <button disabled={busy} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium disabled:opacity-50">Send</button>
+          </form>
+        </div>
+      )}
+      <div className="flex justify-end">
+        <button onClick={() => setOpen((v) => !v)} className="rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium shadow-lg hover:bg-emerald-500">
+          {open ? "Close chat" : "Chat"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Suggestion({ advice }) {
   if (!advice) return <span className="text-slate-500">–</span>;
   return (
@@ -171,6 +244,24 @@ export default function App() {
           </div>
         )}
 
+        <Panel title="Skills" right={<span className="text-xs text-slate-500">{sum.skills?.updated ? `studied ${sum.skills.updated.slice(11, 16)}` : "waiting for a scan"}</span>}>
+          <div className="px-4 py-3 text-sm text-slate-300">{sum.skills?.note || "The agent studies the next scan before it buys."}</div>
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-slate-500">
+              <tr>{["Skill", "How it trades", "Learned from"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {(sum.skills?.skills || []).map((s) => (
+                <tr key={s.id} className="border-t border-slate-800">
+                  <td className="px-4 py-2 text-slate-200 whitespace-nowrap">{s.name}</td>
+                  <td className="px-4 py-2 text-slate-300">{s.lesson}</td>
+                  <td className="px-4 py-2 text-xs text-slate-500">{s.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+
         <Panel title="Possible entries" right={
           <span className="text-xs text-slate-500">
             {Object.entries(cands.sources || {}).map(([name, src]) => (
@@ -182,10 +273,10 @@ export default function App() {
         }>
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-slate-500">
-              <tr>{["Token", "Score", "Call", "Suggestion", "Sources", "Mcap", "Liq", "5m"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+              <tr>{["Token", "Score", "Call", "Suggestion", "Sources", "Mcap", "Liq", "5m", "Rug", "Map"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
             </thead>
             <tbody>
-              {(cands.candidates || []).length === 0 && <tr><td colSpan="8" className="px-4 py-6 text-slate-500">First scan still running.</td></tr>}
+              {(cands.candidates || []).length === 0 && <tr><td colSpan="10" className="px-4 py-6 text-slate-500">First scan still running.</td></tr>}
               {(cands.candidates || []).slice(0, 12).map((c) => (
                 <tr key={c.mint} className="border-t border-slate-800">
                   <td className="px-4 py-2">
@@ -198,6 +289,18 @@ export default function App() {
                   <td className="px-4 py-2 text-slate-400">{c.mcap ? `$${(c.mcap / 1000).toFixed(0)}k` : "–"}</td>
                   <td className="px-4 py-2 text-slate-400">{c.liq ? `$${(c.liq / 1000).toFixed(0)}k` : "–"}</td>
                   <td className={`px-4 py-2 ${tone(c.change_5m)}`}>{c.change_5m == null ? "–" : `${c.change_5m}%`}</td>
+                  <td className="px-4 py-2 text-xs">
+                    {c.rug_score == null && !c.rug_label ? "–" : (
+                      <a className={c.rug_label && c.rug_label !== "clean" ? "text-rose-400 hover:underline" : "text-emerald-400 hover:underline"} target="_blank" rel="noreferrer" href={`https://rugcheck.xyz/tokens/${c.mint}`}>
+                        {c.rug_label && c.rug_label !== "clean" ? c.rug_label : `clean ${c.rug_score ?? ""}`}
+                      </a>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    <a className="text-sky-400 hover:underline" target="_blank" rel="noreferrer" href={`https://v2.bubblemaps.io/sol/token/${c.mint}`}>
+                      {c.bubble_cluster != null ? `${Math.round(c.bubble_cluster * 100)}%` : (c.bubble_label || "map")}
+                    </a>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -300,6 +403,7 @@ export default function App() {
           Ladder: {cfg.ladder.map((l) => `${l.x}X`).join(" → ")} · stop-loss −{pct(cfg.stop_loss_pct)}. Simulated results only.
         </footer>
       </div>
+      <ChatDock token={token} />
     </div>
   );
 }

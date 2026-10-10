@@ -11,7 +11,9 @@ import os
 import time
 import urllib.request
 
+import checks
 import copytrader as ct
+import skills
 import tune
 
 STATE = {"candidates": [], "sources": {}, "scanned_at": 0}
@@ -58,6 +60,15 @@ def blank(mint):
         "rug": None,
         "bundler": None,
         "wash": False,
+        "rugged": False,
+        "rug_score": None,
+        "rug_dangers": [],
+        "rug_label": "",
+        "holder_pct": None,
+        "bubble_score": None,
+        "bubble_cluster": None,
+        "bubble_top10": None,
+        "bubble_label": "",
         "price_sol": None,
         "age_min": None,
         "pump": False,
@@ -349,6 +360,14 @@ def decide(c):
         hard.append("chasing")
     if len(src) < min_sources:
         hard.append(f"agent wants {min_sources} sources")
+    hard.extend(skills.blocks(c))
+    hard.extend(checks.blocks(c))
+    if not hard and c.get("rug_score") is not None and float(c["rug_score"]) < 15 and not c.get("rug_dangers"):
+        score += 8
+        notes.append(f"rugcheck {float(c['rug_score']):.0f}")
+    if not hard and c.get("bubble_score") is not None and float(c["bubble_score"]) >= 60:
+        score += 8
+        notes.append(f"bubblemap {float(c['bubble_score']):.0f}")
 
     confirmed = "gmgn" in src or "dexscreener" in src or "birdeye" in src
     if hard:
@@ -380,6 +399,12 @@ def public(c, score, decision, note):
         "holders": None if c["holders"] is None else int(c["holders"]),
         "price_sol": c["price_sol"],
         "age_min": None if c["age_min"] is None else round(c["age_min"]),
+        "rug_score": None if c.get("rug_score") is None else round(float(c["rug_score"])),
+        "rug_label": c.get("rug_label") or "",
+        "holder_pct": None if c.get("holder_pct") is None else round(float(c["holder_pct"]), 1),
+        "bubble_score": None if c.get("bubble_score") is None else round(float(c["bubble_score"])),
+        "bubble_cluster": None if c.get("bubble_cluster") is None else round(float(c["bubble_cluster"]), 3),
+        "bubble_label": c.get("bubble_label") or "",
     }
 
 
@@ -429,7 +454,42 @@ async def scan_once(session):
         score, decision, note = decide(c)
         row = public(c, score, decision, note)
         row["_price"] = c["price_sol"]
+        row["_c"] = c
         ranked.append(row)
+
+    review = [r for r in ranked if r["decision"] != "skip"][:8]
+    rug_ok = bubble_ok = 0
+    if review:
+        sem = asyncio.Semaphore(4)
+
+        async def review_one(row):
+            async with sem:
+                rug, bubble = await asyncio.gather(
+                    checks.rugcheck(session, row["mint"]),
+                    checks.bubblemap(session, row["mint"]),
+                )
+            return row, rug, bubble
+
+        for row, rug, bubble in await asyncio.gather(*(review_one(r) for r in review)):
+            checks.apply(row["_c"], rug, bubble)
+            if rug and rug.get("ok"):
+                rug_ok += 1
+            if bubble and bubble.get("ok"):
+                bubble_ok += 1
+            score, decision, note = decide(row["_c"])
+            fresh = public(row["_c"], score, decision, note)
+            fresh["_price"] = row.get("_price")
+            fresh["_c"] = row["_c"]
+            row.clear()
+            row.update(fresh)
+    sources["rugcheck"] = {"ok": True, "n": rug_ok, "error": ""}
+    if checks.bubble_key():
+        sources["bubblemap"] = {"ok": bubble_ok > 0 or not review, "n": bubble_ok, "error": ""}
+    else:
+        sources["bubblemap"] = {"ok": False, "n": 0, "error": "set BUBBLEMAPS_API_KEY"}
+
+    for row in ranked:
+        row.pop("_c", None)
     ranked.sort(key=lambda r: ({"enter": 0, "watch": 1, "skip": 2}[r["decision"]], -r["score"]))
     return ranked, sources
 
@@ -438,6 +498,7 @@ async def scan_loop(eng, session, status):
     while True:
         tune.review()
         ranked, sources = await scan_once(session)
+        skills.observe(ranked)
         shown = []
         for row in ranked[:25]:
             item = dict(row)
@@ -451,7 +512,10 @@ async def scan_loop(eng, session, status):
         status["sources"] = {k: v.get("error") or f"{v.get('n', 0)} tokens" for k, v in sources.items()}
 
         entered = 0
-        limit = int(tune.value("max_new_entries_per_scan", cfg("max_new_entries_per_scan", 1)))
+        limit = min(
+            int(tune.value("max_new_entries_per_scan", cfg("max_new_entries_per_scan", 1))),
+            skills.MAX_NEW,
+        )
         for row in ranked:
             if row["decision"] != "enter":
                 continue
