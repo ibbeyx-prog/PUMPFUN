@@ -4,6 +4,18 @@ const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4
 const sol = (n) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${n.toFixed(3)}`);
 const pct = (n) => (n == null ? "–" : `${(n * 100).toFixed(0)}%`);
 const tone = (n) => (n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-400");
+const adviceTone = (label) =>
+  ["Take", "Hold", "Sell"].includes(label) ? "text-emerald-400" : ["Cut", "Pass", "Skip"].includes(label) ? "text-rose-400" : "text-amber-300";
+
+function Suggestion({ advice }) {
+  if (!advice) return <span className="text-slate-500">–</span>;
+  return (
+    <div>
+      <div className={`text-xs font-semibold ${adviceTone(advice.label)}`}>{advice.label}</div>
+      <div className="text-xs text-slate-500">{advice.text}</div>
+    </div>
+  );
+}
 
 function Card({ label, value, sub, cls = "text-slate-100" }) {
   return (
@@ -48,7 +60,7 @@ function Login({ onToken }) {
   return (
     <div className="min-h-screen grid place-items-center text-slate-100">
       <div className="w-80 space-y-3">
-        <h1 className="text-xl font-semibold">Copy Trader</h1>
+        <h1 className="text-xl font-semibold">Paper Scanner</h1>
         <input
           type="password"
           value={v}
@@ -107,7 +119,7 @@ export default function App() {
   const cfg = sum.config;
   return (
     <div className="min-h-screen text-slate-100">
-      <div className="mx-auto max-w-6xl p-4 space-y-4">
+      <div className="mx-auto max-w-7xl p-4 space-y-4">
         <header className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold">pump.fun Paper Scanner</h1>
@@ -125,6 +137,13 @@ export default function App() {
           <Card label="Skipped signals" value={sum.skipped} sub={`chase cap ${pct(cfg.max_chase_pct)}`} />
         </div>
 
+        {sum.lesson && (
+          <div className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
+            <span className="text-xs uppercase tracking-wide text-slate-500">Agent read</span>
+            <div className="mt-1">{sum.lesson.text}</div>
+          </div>
+        )}
+
         <Panel title="Possible entries" right={
           <span className="text-xs text-slate-500">
             {Object.entries(cands.sources || {}).map(([name, src]) => (
@@ -136,7 +155,7 @@ export default function App() {
         }>
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-slate-500">
-              <tr>{["Token", "Score", "Call", "Sources", "Mcap", "Liq", "5m", "Why"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+              <tr>{["Token", "Score", "Call", "Suggestion", "Sources", "Mcap", "Liq", "5m"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
             </thead>
             <tbody>
               {(cands.candidates || []).length === 0 && <tr><td colSpan="8" className="px-4 py-6 text-slate-500">First scan still running.</td></tr>}
@@ -147,11 +166,11 @@ export default function App() {
                   </td>
                   <td className="px-4 py-2 font-medium">{c.score}</td>
                   <td className={`px-4 py-2 text-xs font-semibold ${c.decision === "enter" ? "text-emerald-400" : c.decision === "skip" ? "text-slate-500" : "text-amber-300"}`}>{c.decision}</td>
+                  <td className="px-4 py-2 min-w-52"><Suggestion advice={c.advice} /></td>
                   <td className="px-4 py-2 text-xs text-slate-400">{(c.sources || []).join(", ")}</td>
                   <td className="px-4 py-2 text-slate-400">{c.mcap ? `$${(c.mcap / 1000).toFixed(0)}k` : "–"}</td>
                   <td className="px-4 py-2 text-slate-400">{c.liq ? `$${(c.liq / 1000).toFixed(0)}k` : "–"}</td>
                   <td className={`px-4 py-2 ${tone(c.change_5m)}`}>{c.change_5m == null ? "–" : `${c.change_5m}%`}</td>
-                  <td className="px-4 py-2 text-xs text-slate-500">{c.note}</td>
                 </tr>
               ))}
             </tbody>
@@ -165,10 +184,10 @@ export default function App() {
         <Panel title={`Open positions`}>
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-slate-500">
-              <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Age"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+              <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Age", "Suggestion"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
             </thead>
             <tbody>
-              {sum.open.length === 0 && <tr><td colSpan="6" className="px-4 py-6 text-slate-500">No open positions.</td></tr>}
+              {sum.open.length === 0 && <tr><td colSpan="7" className="px-4 py-6 text-slate-500">No open positions.</td></tr>}
               {sum.open.map((p) => (
                 <tr key={p.mint} className="border-t border-slate-800">
                   <td className="px-4 py-2"><a className="text-sky-400 hover:underline" target="_blank" rel="noreferrer" href={`https://dexscreener.com/solana/${p.mint}`}>{p.symbol || short(p.mint)}</a></td>
@@ -177,6 +196,7 @@ export default function App() {
                   <td className="px-4 py-2">{pct(p.left)}</td>
                   <td className={`px-4 py-2 ${tone(p.pnl)}`}>{sol(p.pnl)}</td>
                   <td className="px-4 py-2 text-slate-400">{p.age_min.toFixed(0)}m</td>
+                  <td className="px-4 py-2 min-w-52"><Suggestion advice={p.advice} /></td>
                 </tr>
               ))}
             </tbody>
