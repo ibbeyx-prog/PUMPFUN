@@ -3,5 +3,6 @@ dist
 trades.csv
 wallets.json
 state.json
+agent_tune.json
 __pycache__
 .env

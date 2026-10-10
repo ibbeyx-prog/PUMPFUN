@@ -12,6 +12,7 @@ import time
 import urllib.request
 
 import copytrader as ct
+import tune
 
 STATE = {"candidates": [], "sources": {}, "scanned_at": 0}
 
@@ -287,6 +288,9 @@ def decide(c):
     score = 0
     notes = []
     src = c["sources"]
+    min_sources = int(tune.value("min_sources", 1))
+    entry_score = float(tune.value("entry_score", cfg("entry_score", 60)))
+    max_change = float(tune.value("max_change_5m", cfg("max_change_5m", 90)))
     if "pump.fun" in src:
         score += 12
     if "dexscreener" in src:
@@ -302,7 +306,7 @@ def decide(c):
         score += 8
     ch = c["change_5m"]
     if ch is not None:
-        lo, hi = cfg("min_change_5m", 5), cfg("max_change_5m", 90)
+        lo, hi = cfg("min_change_5m", 5), max_change
         if lo <= ch <= hi:
             score += 20
             notes.append(f"5m {ch:.0f}%")
@@ -341,14 +345,16 @@ def decide(c):
         hard.append("too new")
     if age is not None and age > cfg("max_age_hours", 36) * 60:
         hard.append("too old")
-    if ch is not None and ch > cfg("max_change_5m", 90):
+    if ch is not None and ch > max_change:
         hard.append("chasing")
+    if len(src) < min_sources:
+        hard.append(f"agent wants {min_sources} sources")
 
     confirmed = "gmgn" in src or "dexscreener" in src or "birdeye" in src
     if hard:
         decision = "skip"
         notes.extend(hard)
-    elif score >= cfg("entry_score", 60) and confirmed and ch is not None and cfg("min_change_5m", 5) <= ch <= cfg("max_change_5m", 90):
+    elif score >= entry_score and confirmed and ch is not None and cfg("min_change_5m", 5) <= ch <= max_change:
         decision = "enter"
     else:
         decision = "watch"
@@ -430,6 +436,7 @@ async def scan_once(session):
 
 async def scan_loop(eng, session, status):
     while True:
+        tune.review()
         ranked, sources = await scan_once(session)
         shown = []
         for row in ranked[:25]:
@@ -444,7 +451,7 @@ async def scan_loop(eng, session, status):
         status["sources"] = {k: v.get("error") or f"{v.get('n', 0)} tokens" for k, v in sources.items()}
 
         entered = 0
-        limit = int(cfg("max_new_entries_per_scan", 1))
+        limit = int(tune.value("max_new_entries_per_scan", cfg("max_new_entries_per_scan", 1)))
         for row in ranked:
             if row["decision"] != "enter":
                 continue

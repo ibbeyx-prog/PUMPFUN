@@ -16,6 +16,7 @@ from aiohttp import web
 
 import copytrader as ct
 import scanner
+import tune
 
 TOKEN = os.getenv("DASH_TOKEN", "")
 RESCORE = float(os.getenv("RESCORE_HOURS", "24")) * 3600
@@ -194,6 +195,7 @@ async def api_summary(request):
                                            "entry_score")},
         "scan": {"at": scanner.STATE["scanned_at"], "sources": scanner.STATE["sources"]},
         "lesson": lesson,
+        "agent": tune.public(),
     })
 
 

@@ -351,6 +351,20 @@ class Paper:
                         p["stop_seen"] = True
                     continue
                 p["stop_seen"] = False
+                import tune
+                cut_x = tune.value("early_cut_x")
+                cut_min = float(tune.value("early_cut_min") or 10)
+                age_min = (time.time() - p["t0"]) / 60
+                if cut_x and age_min >= cut_min and x <= float(cut_x) and x < CFG["ladder"][0]["x"]:
+                    if p.get("cut_seen"):
+                        sym = p.get("symbol") or mint[:6]
+                        self.sell(mint, price, 1.0, "agent cut")
+                        tune.note("exit", sym, f"{x:.2f}x",
+                                  f"cut under {cut_x}x after {int(cut_min)}m")
+                    else:
+                        p["cut_seen"] = True
+                    continue
+                p["cut_seen"] = False
                 if time.time() - p["t0"] > CFG["time_stop_min"] * 60 and x < CFG["ladder"][0]["x"]:
                     self.sell(mint, price, 1.0, "time-stop"); continue
                 while p["tier"] < len(CFG["ladder"]) and x >= CFG["ladder"][p["tier"]]["x"]:

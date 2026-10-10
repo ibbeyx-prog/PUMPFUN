@@ -177,6 +177,32 @@ export default function App() {
           </table>
         </Panel>
 
+        <Panel title="Agent changes" right={
+          <span className="text-xs text-slate-500">
+            {sum.agent && sum.agent.values && Object.entries(sum.agent.values).map(([k, v]) => (
+              <span key={k} className="ml-2">{k} {String(v)}</span>
+            ))}
+          </span>
+        }>
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-slate-500">
+              <tr>{["Time", "Change", "From", "To", "Why"].map((h) => <th key={h} className="px-4 py-2 font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {(sum.agent?.changes || []).length === 0 && <tr><td colSpan="5" className="px-4 py-6 text-slate-500">No edits yet. The agent changes rules after 5 closed trades.</td></tr>}
+              {(sum.agent?.changes || []).map((c, i) => (
+                <tr key={i} className="border-t border-slate-800">
+                  <td className="px-4 py-2 text-xs text-slate-500 whitespace-nowrap">{(c.time || "").slice(5, 16)}</td>
+                  <td className="px-4 py-2 text-slate-200">{c.what}</td>
+                  <td className="px-4 py-2 text-slate-400">{c.from || "–"}</td>
+                  <td className="px-4 py-2 text-emerald-400">{c.to}</td>
+                  <td className="px-4 py-2 text-xs text-slate-500">{c.why}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+
         <Panel title="Cumulative PnL (closed positions)">
           <Spark data={sum.cum_pnl} />
         </Panel>
