@@ -1,0 +1,57 @@
+{
+  "helius_api_key": "PASTE_YOUR_HELIUS_API_KEY",
+  "seed_wallets": [],
+  "seed_tokens": [],
+  "discover_top_coins": 25,
+  "discover_min_gain_pct": 300,
+  "discover_max_age_days": 3,
+  "discover_pages": 8,
+  "discover_min_buy_sol": 0.3,
+  "discover_min_profit_x": 1.5,
+  "min_coin_appearances": 1,
+  "max_candidates": 60,
+  "history_pages": 5,
+  "min_closed_trades": 15,
+  "min_win_rate": 0.4,
+  "max_win_rate": 0.85,
+  "min_median_hold_sec": 30,
+  "min_realized_pnl_sol": 5,
+  "top_wallets": 20,
+  "size_sol": 0.1,
+  "max_open_positions": 5,
+  "max_chase_pct": 0.25,
+  "sim_slippage": 0.03,
+  "fee_sol": 0.002,
+  "ladder": [
+    {
+      "x": 2.0,
+      "sell_frac": 0.4
+    },
+    {
+      "x": 3.5,
+      "sell_frac": 0.3
+    },
+    {
+      "x": 5.0,
+      "sell_frac": 1.0
+    }
+  ],
+  "stop_loss_pct": 0.35,
+  "time_stop_min": 90,
+  "follow_wallet_sells": true,
+  "price_poll_sec": 3,
+  "scan_sec": 45,
+  "entry_score": 60,
+  "max_new_entries_per_scan": 1,
+  "entry_cooldown_min": 180,
+  "min_liquidity_usd": 8000,
+  "min_mcap_usd": 6000,
+  "max_mcap_usd": 800000,
+  "min_change_5m": 5,
+  "max_change_5m": 90,
+  "max_rug_ratio": 0.4,
+  "max_bundler_rate": 0.35,
+  "min_age_min": 2,
+  "max_age_hours": 36,
+  "birdeye_api_key": ""
+}

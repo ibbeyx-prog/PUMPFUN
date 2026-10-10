@@ -1,0 +1,7 @@
+node_modules
+dist
+trades.csv
+wallets.json
+state.json
+__pycache__
+.env

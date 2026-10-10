@@ -1,0 +1,6 @@
+dashboard/node_modules
+dashboard/dist
+trades.csv
+wallets.json
+state.json
+__pycache__
