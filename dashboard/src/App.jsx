@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 
 const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s);
-const sol = (n) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${n.toFixed(3)}`);
 const usd = (n) => {
   if (n == null) return null;
   const abs = Math.abs(n);
@@ -18,6 +17,12 @@ const dollars = (n, signed = false) => {
   return signed ? `${num < 0 ? "-" : "+"}${text}` : text;
 };
 const pct = (n) => (n == null ? "–" : `${(n * 100).toFixed(0)}%`);
+const solToUsd = (solAmount, px) => {
+  const n = Number(solAmount);
+  const price = Number(px);
+  if (!price || Number.isNaN(n)) return null;
+  return n * price;
+};
 const tone = (n) => (n > 0 ? "text-emerald-300" : n < 0 ? "text-rose-300" : "text-slate-400");
 const adviceTone = (label) =>
   ["Take", "Hold", "Sell"].includes(label) ? "text-emerald-300" : ["Cut", "Pass", "Skip"].includes(label) ? "text-rose-300" : "text-amber-200";
@@ -227,9 +232,13 @@ export default function App() {
   if (!sum) return <div className="grid min-h-screen place-items-center text-slate-500">Loading…</div>;
 
   const cfg = sum.config;
+  const px = sum.sol_usd || sum.budget?.sol_usd;
+  const pnlUsd = (solAmount) => usd(solToUsd(solAmount, px));
+  const equity = sum.budget?.equity_usd;
+  const started = sum.budget?.start_usd;
   const budget = [
     ["Start", dollars(sum.budget?.start_usd)],
-    ["Equity", dollars(sum.budget?.equity_usd, true)],
+    ["Equity", dollars(equity)],
     ["Realized", dollars(sum.budget?.realized_usd, true)],
     ["In trades", dollars(sum.budget?.deployed_usd)],
     ["Free to invest", dollars(sum.budget?.available_usd)],
@@ -262,22 +271,23 @@ export default function App() {
         <section className="grid gap-3 lg:grid-cols-5">
           <div className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-5 lg:col-span-3">
             <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Total PnL</div>
-            <div className={`num mt-2 text-4xl font-medium ${tone(sum.total_pnl)}`}>
-              {sol(sum.total_pnl)}
-              <span className="ml-2 text-base font-normal text-slate-500">SOL</span>
+            <div className={`num mt-2 text-4xl font-medium ${equity == null || started == null ? "text-slate-100" : tone(equity - started)}`}>
+              {dollars(equity)}
             </div>
-            {sum.total_pnl_usd != null && <div className={`num mt-1 text-lg ${tone(sum.total_pnl)}`}>{usd(sum.total_pnl_usd)}</div>}
-            <div className="mt-2 text-xs text-slate-500">{sum.closed} closed trades{sum.sol_usd ? ` · SOL $${sum.sol_usd}` : ""}</div>
+            <div className="mt-1 text-sm text-slate-400">current equity</div>
+            <div className="mt-2 text-xs text-slate-500">
+              realized {dollars(sum.budget?.realized_usd, true)} · {sum.closed} closed trades
+            </div>
             <div className="mt-4">
               <Spark data={sum.cum_pnl} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3 lg:col-span-2">
             {[
-              ["Win rate", pct(sum.win_rate), `best ${sol(sum.best)} · worst ${sol(sum.worst)}`],
+              ["Win rate", pct(sum.win_rate), `best ${pnlUsd(sum.best) || "–"} · worst ${pnlUsd(sum.worst) || "–"}`],
               ["Open", `${sum.open.length}/${cfg.max_open_positions}`, `$${cfg.trade_usd} per trade · one per coin`],
               ["Skipped", sum.skipped, `chase cap ${pct(cfg.max_chase_pct)}`],
-              ["Equity", dollars(sum.budget?.equity_usd, true), `start ${dollars(sum.budget?.start_usd)}`],
+              ["Closed PnL", pnlUsd(sum.total_pnl) || "–", `${sum.closed} closed trades`],
             ].map(([label, value, sub]) => (
               <div key={label} className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-4">
                 <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</div>
@@ -388,7 +398,7 @@ export default function App() {
                       <td className="px-4 py-2.5 text-slate-400">{short(p.wallet)}</td>
                       <td className={`num px-4 py-2.5 font-medium ${p.x >= 1 ? "text-emerald-300" : "text-rose-300"}`}>{p.x ? `${p.x.toFixed(2)}X` : "–"}</td>
                       <td className="num px-4 py-2.5">{pct(p.left)}</td>
-                      <td className={`num px-4 py-2.5 ${tone(p.pnl)}`}>{sol(p.pnl)}</td>
+                      <td className={`num px-4 py-2.5 ${tone(p.pnl)}`}>{pnlUsd(p.pnl) || "–"}</td>
                       <td className="num px-4 py-2.5 text-slate-400">{p.age_min.toFixed(0)}m</td>
                       <td className="min-w-52 px-4 py-2.5"><Suggestion advice={p.advice} /></td>
                     </tr>
@@ -408,7 +418,7 @@ export default function App() {
                         <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
                         <td className="px-2 py-2 text-slate-300">{short(t.mint)}</td>
                         <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
-                        <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? sol(Number(t.sol_pnl)) : ""}</td>
+                        <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? pnlUsd(t.sol_pnl) : ""}</td>
                         <td className="px-2 py-2 text-xs text-slate-500">{t.note}</td>
                       </tr>
                     ))}
@@ -426,7 +436,7 @@ export default function App() {
                     {wallets.map((w) => (
                       <tr key={w.wallet} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                         <td className="px-4 py-2.5"><a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={`https://solscan.io/account/${w.wallet}`}>{short(w.wallet)}</a></td>
-                        <td className={`num px-4 py-2.5 ${tone(w.pnl_sol)}`}>{sol(w.pnl_sol)}</td>
+                        <td className={`num px-4 py-2.5 ${tone(w.pnl_sol)}`}>{pnlUsd(w.pnl_sol) || "–"}</td>
                         <td className="num px-4 py-2.5">{pct(w.win_rate)}</td>
                         <td className="num px-4 py-2.5">{w.trades}</td>
                         <td className="num px-4 py-2.5 text-slate-400">{Math.round(w.median_hold)}s</td>
@@ -457,7 +467,7 @@ export default function App() {
                     <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-400">{r.start.slice(5)} → {r.end.slice(5)}</td>
                     <td className="num px-4 py-2.5">{r.closed}</td>
                     <td className="num px-4 py-2.5">{pct(r.win_rate)}</td>
-                    <td className={`num px-4 py-2.5 ${tone(r.pnl)}`}>{sol(r.pnl)}</td>
+                    <td className={`num px-4 py-2.5 ${tone(r.pnl)}`}>{pnlUsd(r.pnl) || "–"}</td>
                     <td className="num px-4 py-2.5 text-slate-400">{r.buys}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-300">{r.text}</td>
                   </tr>
