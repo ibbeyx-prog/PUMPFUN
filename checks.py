@@ -9,7 +9,12 @@ import copytrader as ct
 
 RUG = "https://api.rugcheck.xyz/v1/tokens"
 BUBBLE = "https://api.bubblemaps.io/v0/tokens/metrics/solana"
-MAP = "https://v2.bubblemaps.io/sol/token"
+MAP = "https://v2.bubblemaps.io/map"
+
+
+def map_url(address, chain="sol"):
+    """Same shape as https://v2.bubblemaps.io/map?address=...&chain=bsc, for Solana."""
+    return f"{MAP}?address={address}&chain={chain}"
 
 # RugCheck normalised score. Higher means more risk. A clean pump coin sits near 1.
 RUG_SKIP = 50

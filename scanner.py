@@ -404,6 +404,7 @@ def public(c, score, decision, note):
         "bubble_score": None if c.get("bubble_score") is None else round(float(c["bubble_score"])),
         "bubble_cluster": None if c.get("bubble_cluster") is None else round(float(c["bubble_cluster"]), 3),
         "bubble_label": c.get("bubble_label") or "",
+        "bubble_url": checks.map_url(c["mint"]),
     }
 
 

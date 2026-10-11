@@ -1,3 +1,16 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+body {
+  background:
+    radial-gradient(900px 420px at 0% -10%, rgba(245, 185, 66, 0.09), transparent 55%),
+    radial-gradient(700px 380px at 100% 0%, rgba(52, 211, 153, 0.05), transparent 50%),
+    #0c0e13;
+  min-height: 100vh;
+}
+
+.num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
