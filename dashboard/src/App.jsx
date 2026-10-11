@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import PhantomLink from "./Phantom.jsx";
 
 const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s);
 const usd = (n) => {
@@ -25,7 +26,7 @@ const solToUsd = (solAmount, px) => {
 };
 const tone = (n) => (n > 0 ? "text-emerald-300" : n < 0 ? "text-rose-300" : "text-slate-400");
 const adviceTone = (label) =>
-  ["Take", "Hold", "Sell"].includes(label) ? "text-emerald-300" : ["Cut", "Pass", "Skip"].includes(label) ? "text-rose-300" : "text-amber-200";
+  ["Take", "Hold", "Sell", "Let winners run", "Keep the book"].includes(label) ? "text-emerald-300" : ["Cut", "Pass", "Skip", "Cut fades", "Skip one source"].includes(label) ? "text-rose-300" : "text-amber-200";
 
 function ChatDock({ token }) {
   const [open, setOpen] = useState(false);
@@ -259,6 +260,7 @@ export default function App() {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="rounded-full border border-amber-300/30 bg-amber-400/10 px-2.5 py-1 text-amber-200">PAPER MODE</span>
+            <PhantomLink token={token} />
             <span className={`rounded-full border border-white/10 px-2.5 py-1 ${err ? "text-rose-300" : "text-slate-300"}`}>
               {err || `● ${sum.status.phase}`}
             </span>
@@ -346,10 +348,10 @@ export default function App() {
           >
             <table className="w-full text-sm">
               <thead>
-                <tr>{["Token", "Score", "Call", "Suggestion", "Sources", "Mcap", "Liq", "5m", "Rug", "Map"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                <tr>{["Token", "Score", "Call", "Suggestion", "Eye", "Sources", "Mcap", "Liq", "5m", "Rug", "Map"].map((h) => <Th key={h}>{h}</Th>)}</tr>
               </thead>
               <tbody>
-                {(cands.candidates || []).length === 0 && <Empty cols={10}>First scan still running.</Empty>}
+                {(cands.candidates || []).length === 0 && <Empty cols={11}>First scan still running.</Empty>}
                 {(cands.candidates || []).slice(0, 12).map((c) => (
                   <tr key={c.mint} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                     <td className="px-4 py-2.5">
@@ -360,6 +362,7 @@ export default function App() {
                       <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${c.decision === "enter" ? "bg-emerald-400/15 text-emerald-300" : c.decision === "skip" ? "bg-white/5 text-slate-500" : "bg-amber-400/15 text-amber-200"}`}>{c.decision}</span>
                     </td>
                     <td className="min-w-52 px-4 py-2.5"><Suggestion advice={c.advice} /></td>
+                    <td className="min-w-52 px-4 py-2.5"><Suggestion advice={c.eye} /></td>
                     <td className="px-4 py-2.5 text-xs text-slate-400">{(c.sources || []).join(", ")}</td>
                     <td className="num px-4 py-2.5 text-slate-400">{c.mcap ? `$${(c.mcap / 1000).toFixed(0)}k` : "–"}</td>
                     <td className="num px-4 py-2.5 text-slate-400">{c.liq ? `$${(c.liq / 1000).toFixed(0)}k` : "–"}</td>
@@ -388,10 +391,10 @@ export default function App() {
             <Shell title="Open positions">
               <table className="w-full text-sm">
                 <thead>
-                  <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Age", "Suggestion"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                  <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Age", "Suggestion", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody>
-                  {sum.open.length === 0 && <Empty cols={7}>No open positions.</Empty>}
+                  {sum.open.length === 0 && <Empty cols={8}>No open positions.</Empty>}
                   {sum.open.map((p) => (
                     <tr key={p.mint} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5"><a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={`https://dexscreener.com/solana/${p.mint}`}>{p.symbol || short(p.mint)}</a></td>
@@ -401,6 +404,7 @@ export default function App() {
                       <td className={`num px-4 py-2.5 ${tone(p.pnl)}`}>{pnlUsd(p.pnl) || "–"}</td>
                       <td className="num px-4 py-2.5 text-slate-400">{p.age_min.toFixed(0)}m</td>
                       <td className="min-w-52 px-4 py-2.5"><Suggestion advice={p.advice} /></td>
+                      <td className="min-w-52 px-4 py-2.5"><Suggestion advice={p.eye} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -410,16 +414,20 @@ export default function App() {
             <div className="grid gap-4 lg:grid-cols-2">
               <Shell title="Recent activity">
                 <table className="w-full text-sm">
+                  <thead>
+                    <tr>{["Time", "Event", "Token", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                  </thead>
                   <tbody>
-                    {trades.length === 0 && <Empty cols={6}>No activity yet.</Empty>}
+                    {trades.length === 0 && <Empty cols={7}>No activity yet.</Empty>}
                     {trades.slice(0, 40).map((t, i) => (
-                      <tr key={i} className="border-t border-white/[0.05] first:border-0 hover:bg-white/[0.03]">
+                      <tr key={i} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                         <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{t.time.slice(5, 16)}</td>
                         <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
                         <td className="px-2 py-2 text-slate-300">{short(t.mint)}</td>
                         <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
                         <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? pnlUsd(t.sol_pnl) : ""}</td>
                         <td className="px-2 py-2 text-xs text-slate-500">{t.note}</td>
+                        <td className="min-w-52 px-4 py-2"><Suggestion advice={t.eye} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -505,6 +513,34 @@ export default function App() {
             </Shell>
 
             <Shell title="Eye">
+              <div className="px-4 py-3 text-sm text-slate-300">
+                Eye trades the paper book on its own. It reads DexScreener and the live scan, then changes one rule from its recent closes.
+              </div>
+              {eye.market && <div className="px-4 pb-3 text-xs text-slate-500">{eye.market}</div>}
+              <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">How Eye is growing</div>
+              <div className="divide-y divide-white/[0.05]">
+                {(eye.growth || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">The first growth pass runs after Eye checks the public market.</div>}
+                {(eye.growth || []).map((g, i) => (
+                  <div key={i} className="px-4 py-3 text-sm">
+                    <div className="text-slate-200">{g.did}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {(g.time || "").slice(5, 16)}
+                      {g.win_rate != null ? ` · last closes ${Math.round(g.win_rate * 100)}% won` : ""}
+                      {g.equity_usd != null ? ` · equity $${g.equity_usd}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">How to trade better</div>
+              <div className="divide-y divide-white/[0.05]">
+                {(eye.improvements || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">No recommendation yet.</div>}
+                {(eye.improvements || []).map((n) => (
+                  <div key={n.id} className="px-4 py-3 text-sm">
+                    <span className={`mr-2 text-xs font-semibold ${adviceTone(n.label)}`}>{n.label}</span>
+                    <span className="text-slate-200">{n.text}</span>
+                  </div>
+                ))}
+              </div>
               <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">What Eye has learned</div>
               <div className="divide-y divide-white/[0.05]">
                 {(eye.knowledge || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">No notes yet. Eye writes them after a research pass or a review.</div>}

@@ -13,6 +13,7 @@ import urllib.request
 
 import checks
 import copytrader as ct
+import live
 import skills
 import tune
 
@@ -535,6 +536,7 @@ async def scan_loop(eng, session, status):
             opened = await eng.buy(session, mint, "+".join(row["sources"]), price, symbol=row.get("symbol") or "")
             if not opened:
                 continue
+            live.queue_phantom(mint, row.get("symbol") or "", ct.CFG.get("trade_usd") or 10)
             entered += 1
         if entered:
             status["phase"] = f"paper entry · {status['phase']}"

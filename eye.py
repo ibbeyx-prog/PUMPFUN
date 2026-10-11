@@ -2,6 +2,7 @@
 Eye: paper supervisor. It may learn from the web and from its own trades.
 It may halt live trading. It may not resume it, and it may not touch the budget.
 """
+import csv
 import json
 import os
 import re
@@ -29,6 +30,8 @@ def _load():
     data.setdefault("notes", [])
     data.setdefault("last_research", 0)
     data.setdefault("next_research", 0)
+    data.setdefault("growth", [])
+    data.setdefault("market", "")
     return data
 
 
@@ -213,10 +216,296 @@ async def review(session=None, complete=None):
     return _load()
 
 
+def _closed_rows():
+    if not os.path.exists(ct.TRADES):
+        return []
+    with open(ct.TRADES, newline="", encoding="utf-8", errors="replace") as f:
+        return [r for r in csv.DictReader(f) if r.get("event") == "CLOSED"]
+
+
+def _num(row, key):
+    try:
+        return float(row.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sources(row):
+    return len([s for s in (row.get("wallet") or "").split("+") if s]) or 1
+
+
+def improvements(rows=None):
+    """What the closed paper book says to change. No model call."""
+    closed = _closed_rows() if rows is None else [r for r in rows if r.get("event") == "CLOSED"]
+    n = len(closed)
+    if n < 5:
+        return [{
+            "id": "wait",
+            "label": "Wait",
+            "text": "Eye needs at least 5 closed trades before it suggests a change.",
+        }]
+    wins = [r for r in closed if _num(r, "sol_pnl") > 0]
+    fades = [r for r in closed if _num(r, "sol_pnl") < 0 and _num(r, "x") < 1]
+    by = {}
+    for r in closed:
+        by.setdefault(_sources(r), []).append(_num(r, "sol_pnl"))
+
+    def wr(xs):
+        return sum(1 for x in xs if x > 0) / len(xs) if xs else 0
+
+    recs = []
+    two = by.get(2) or []
+    if len(two) >= 3 and wr(two) < 0.35:
+        recs.append({
+            "id": "sources",
+            "label": "Need 3 markets",
+            "text": f"2-source closes won {wr(two):.0%} of {len(two)}. Skip a name until a third market agrees.",
+        })
+    one = by.get(1) or []
+    if len(one) >= 3 and wr(one) < 0.4:
+        recs.append({
+            "id": "one_source",
+            "label": "Skip one source",
+            "text": f"1-source closes won {wr(one):.0%} of {len(one)}. Do not enter on a single feed.",
+        })
+    if len(fades) / n >= 0.4:
+        recs.append({
+            "id": "cut",
+            "label": "Cut fades",
+            "text": f"{len(fades)} of {n} closes lost before 1x. Sell under 0.8x after 10 minutes instead of holding to the full stop.",
+        })
+    if len(wins) / n < 0.25:
+        recs.append({
+            "id": "score",
+            "label": "Raise the bar",
+            "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of 70.",
+        })
+    ladder = [r for r in wins if "ladder" in (r.get("note") or "")]
+    if wins and len(ladder) / len(wins) >= 0.4:
+        recs.append({
+            "id": "hold",
+            "label": "Let winners run",
+            "text": f"{len(ladder)} of {len(wins)} winners paid on the ladder. Hold a trade above entry and sell into 2x, 3.5x, and 5x.",
+        })
+    if not recs:
+        recs.append({
+            "id": "steady",
+            "label": "Keep the book",
+            "text": f"{len(wins)} of {n} closes won. No rule change stands out from this book.",
+        })
+    return recs[:4]
+
+
+def _pick(recs, *ids):
+    found = {r["id"]: r for r in recs}
+    for name in ids:
+        if name in found:
+            return found[name]
+    return recs[0] if recs else None
+
+
+def for_candidate(c, recs):
+    nsrc = len(c.get("sources") or [])
+    try:
+        change = float(c.get("change_5m")) if c.get("change_5m") is not None else None
+    except (TypeError, ValueError):
+        change = None
+    try:
+        score = float(c.get("score")) if c.get("score") is not None else None
+    except (TypeError, ValueError):
+        score = None
+    if nsrc <= 1:
+        return _pick(recs, "one_source", "sources", "score")
+    if nsrc == 2:
+        return _pick(recs, "sources", "score")
+    if change is not None and change > 45:
+        return _pick(recs, "cut", "score")
+    if score is not None and score < 70 and c.get("decision") != "skip":
+        return _pick(recs, "score", "cut")
+    if c.get("decision") == "enter":
+        return _pick(recs, "hold", "score")
+    return _pick(recs, "cut", "score")
+
+
+def for_open(p, recs):
+    x = p.get("x") or 0
+    age = p.get("age_min") or 0
+    nsrc = _sources(p)
+    if x >= 1:
+        return _pick(recs, "hold", "cut")
+    if x < 0.8 and age >= 10:
+        return _pick(recs, "cut", "one_source", "sources")
+    if nsrc <= 1:
+        return _pick(recs, "one_source", "cut")
+    if nsrc == 2:
+        return _pick(recs, "sources", "cut")
+    return _pick(recs, "cut", "score")
+
+
+def for_trade(t, recs):
+    if t.get("event") not in ("CLOSED", "SELL"):
+        return None
+    note = t.get("note") or ""
+    x = _num(t, "x")
+    pnl = _num(t, "sol_pnl")
+    found = {r["id"]: r for r in recs}
+    if "ladder" in note or (pnl > 0 and x >= 2):
+        return found.get("hold") or {
+            "id": "hold",
+            "label": "Let winners run",
+            "text": "This one paid on the way up. Keep selling winners into 2x, 3.5x, and 5x.",
+        }
+    if x and x < 1:
+        return _pick(recs, "cut", "score", "sources")
+    if pnl > 0:
+        return found.get("hold") or _pick(recs, "score", "sources")
+    if t.get("event") == "CLOSED":
+        return _pick(recs, "cut", "score")
+    return None
+
+
+def _current(name, default):
+    stored = tune.value(name, None)
+    return default if stored is None else stored
+
+
+def _apply(name, new, why):
+    data = tune._load()
+    if not tune._set(data, name, new, why):
+        return False
+    tune._save(data)
+    return True
+
+
+async def _read_market(session):
+    """Public DexScreener boosts plus the names the paper scan already fetched."""
+    boosts = 0
+    if session is not None:
+        try:
+            async with session.get(
+                "https://api.dexscreener.com/token-boosts/top/v1",
+                timeout=aiohttp.ClientTimeout(total=12),
+                headers={"Accept": "application/json", "User-Agent": "pumpfun-paper-eye"},
+            ) as resp:
+                data = await resp.json(content_type=None) if resp.status == 200 else []
+            if isinstance(data, dict):
+                data = data.get("tokens") or data.get("data") or []
+            if isinstance(data, list):
+                boosts = sum(
+                    1 for item in data
+                    if isinstance(item, dict) and str(item.get("chainId") or "") in ("solana", "sol")
+                )
+        except Exception:
+            boosts = 0
+    try:
+        import scanner
+        names = scanner.STATE.get("candidates") or []
+    except Exception:
+        names = []
+    chasing = sum(1 for c in names if _num(c, "change_5m") > 45)
+    count = len(names)
+    if count:
+        text = (
+            f"Public scan has {count} Solana names, {chasing} already up more than 45% in 5 minutes. "
+            f"DexScreener lists {boosts} boosted Solana tokens."
+        )
+    else:
+        text = f"DexScreener lists {boosts} boosted Solana tokens. The paper scan has not posted names yet."
+    return {"boosts": boosts, "names": count, "chasing": chasing, "text": text[:240]}
+
+
+def _grow_once(ids, recent, market):
+    """Move at most one paper rule. Never touches budget, size, or live trading."""
+    n = len(recent)
+    wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
+    wr = (wins / n) if n else 0
+    chase = market["chasing"] / market["names"] if market["names"] else 0
+    if ("sources" in ids or "one_source" in ids) and _current("min_sources", 1) < 3:
+        if _apply("min_sources", 3, "Eye: one- and two-source closes are not paying."):
+            return "Raised min sources to 3."
+    if "score" in ids and _current("entry_score", 60) < 70:
+        if _apply("entry_score", 70, "Eye: too few closes are winning. Pass weaker scores."):
+            return "Raised the entry score to 70."
+    if "cut" in ids and tune.value("early_cut_x", None) is None:
+        moved = _apply("early_cut_x", 0.8, "Eye: most closes lose before 1x. Cut the fade.")
+        _apply("early_cut_min", 10, "Eye: wait 10 minutes before that early cut.")
+        if moved:
+            return "Turned on the 0.8x early cut."
+    if chase >= 0.4 and _current("max_change_5m", 90) > 40:
+        nxt = _current("max_change_5m", 90) - 5
+        if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
+            return f"Tightened the 5-minute chase cap to {int(nxt)}%."
+    floor = 70 if "score" in ids else 55
+    if n >= 8 and wr < 0.2 and _current("entry_score", 60) < 80:
+        nxt = _current("entry_score", 60) + 5
+        if _apply("entry_score", nxt, f"Eye: the last {n} closes won {wr:.0%}. Ask for a higher score."):
+            return f"Raised the entry score to {int(nxt)}."
+    if n >= 8 and wr >= 0.45 and chase < 0.25 and _current("entry_score", 60) > floor:
+        nxt = _current("entry_score", 60) - 5
+        if _apply("entry_score", max(floor, nxt), f"Eye: the last {n} closes won {wr:.0%}. Allow a slightly lower score."):
+            return f"Lowered the entry score toward {int(max(floor, nxt))}."
+    if n:
+        return f"Kept the rules. The last {n} closes won {wr:.0%}."
+    return "Kept the rules. Not enough recent closes to move one."
+
+
+def _equity_usd():
+    path = os.path.join(ct.DATA, "bank.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            bank = json.load(f)
+        import scanner
+        px = scanner.STATE.get("sol_usd")
+        if not px:
+            return None
+        sol = float(bank.get("start_sol") or 0) + float(bank.get("realized_sol") or 0)
+        return round(sol * float(px), 2)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _remember(market, did, recent):
+    data = _load()
+    n = len(recent)
+    wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
+    data["market"] = market["text"]
+    data.setdefault("growth", [])
+    data["growth"].insert(0, {
+        "time": time.strftime("%F %T"),
+        "closes": len(_closed_rows()),
+        "recent": n,
+        "win_rate": None if not n else round(wins / n, 2),
+        "equity_usd": _equity_usd(),
+        "did": did[:180],
+        "market": market["text"][:180],
+    })
+    data["growth"] = data["growth"][:30]
+    _save(data)
+
+
+async def grow(session=None):
+    """One self-growth pass. Paper trades only. Does not resume live trading."""
+    market = await _read_market(session)
+    recent = _closed_rows()[-15:]
+    did = _grow_once({r["id"] for r in improvements()}, recent, market)
+    add_note("web", market["text"], "dexscreener")
+    add_note("trades", did, "own trades")
+    _remember(market, did, recent)
+    print("EYE", did)
+    return _load()
+
+
 def public():
     data = _load()
     return {
         "knowledge": data["notes"][:12],
+        "improvements": improvements(),
+        "growth": (data.get("growth") or [])[:8],
+        "market": data.get("market") or "",
+        "trading": True,
+        "paper": True,
         "last_research": data.get("last_research") or 0,
         "next_research": data.get("next_research") or 0,
     }

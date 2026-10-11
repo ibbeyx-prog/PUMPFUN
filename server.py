@@ -56,7 +56,7 @@ async def supervisor(app):
     asyncio.create_task(guard("manage", lambda: ENG.manage(session)))
     asyncio.create_task(guard("scan", lambda: scanner.scan_loop(ENG, session, STATUS)))
     asyncio.create_task(guard("reports", _reports))
-    asyncio.create_task(guard("eye", _eye))
+    asyncio.create_task(guard("eye", lambda: _eye(session)))
     # Wallet copy stays available, but entries come from the scanner.
     if os.path.exists(ct.WALLETS):
         wallets = [m["wallet"] for m in json.load(open(ct.WALLETS)) if m.get("wallet")]
@@ -65,14 +65,20 @@ async def supervisor(app):
             asyncio.create_task(guard("watch", lambda w=wallets: ct.watch(ENG, session, w)))
 
 
-async def _eye():
+async def _eye(session):
+    retried = False
     while True:
+        wait = 600
         try:
             await eye.research()
+            data = await eye.grow(session)
+            if not retried and "has not posted names" in (data.get("market") or ""):
+                retried = True
+                wait = 50
             await eye.review()
         except Exception as e:
             print("eye failed:", type(e).__name__, e)
-        await asyncio.sleep(600)
+        await asyncio.sleep(wait)
 
 
 async def _reports():
@@ -205,6 +211,7 @@ async def api_summary(request):
                 sol_px = await scanner.sol_usd(session) or sol_px
         except Exception:
             pass
+    tips = eye.improvements(rows)
     open_pos = []
     for mint, p in (ENG.pos if ENG else {}).items():
         item = {"mint": mint, "symbol": p.get("symbol") or "",
@@ -213,6 +220,7 @@ async def api_summary(request):
                 "x": p.get("last_x"), "age_min": (time.time() - p["t0"]) / 60,
                 "pnl": p["pnl"]}
         item["advice"] = advise_open(item, lesson)
+        item["eye"] = eye.for_open(item, tips)
         open_pos.append(item)
     return web.json_response({
         "status": STATUS,
@@ -252,15 +260,27 @@ async def api_eye(request):
 
 async def api_trades(request):
     limit = int(request.query.get("limit", 200))
-    return web.json_response(read_trades()[-limit:][::-1])
+    rows = read_trades()
+    tips = eye.improvements(rows)
+    out = []
+    for r in rows[-limit:][::-1]:
+        item = dict(r)
+        tip = eye.for_trade(item, tips)
+        if tip:
+            item["eye"] = tip
+        out.append(item)
+    return web.json_response(out)
 
 
 async def api_candidates(request):
-    lesson = lessons(read_trades())
+    rows = read_trades()
+    lesson = lessons(rows)
+    tips = eye.improvements(rows)
     candidates = []
     for c in scanner.STATE["candidates"]:
         item = dict(c)
         item["advice"] = advise_candidate(item, lesson)
+        item["eye"] = eye.for_candidate(item, tips)
         candidates.append(item)
     return web.json_response({
         "candidates": candidates,
@@ -337,6 +357,104 @@ async def api_wallets(request):
     return web.json_response(json.load(open(ct.WALLETS)))
 
 
+SOL_MINT = "So11111111111111111111111111111111111111112"
+
+
+async def api_phantom_get(request):
+    return web.json_response(live.public())
+
+
+async def api_phantom_post(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ok, why = live.set_phantom(
+        (body or {}).get("address") or "",
+        bool((body or {}).get("trade")),
+        (body or {}).get("pin") or "",
+    )
+    if not ok:
+        return web.json_response({"error": why, **live.public()}, status=400)
+    return web.json_response(live.public())
+
+
+async def api_phantom_lock(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ok, why = live.set_lock((body or {}).get("pin") or "", (body or {}).get("old") or "")
+    if not ok:
+        return web.json_response({"error": why, **live.public()}, status=400)
+    return web.json_response(live.public())
+
+
+async def api_phantom_swap(request):
+    """Build a Jupiter buy for the connected address. The browser asks Phantom to sign it."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ok, why = live.check_lock((body or {}).get("pin") or "")
+    if not ok:
+        return web.json_response({"error": why, **live.public()}, status=401)
+    order = live.pending_order()
+    if not order or str(order.get("id")) != str((body or {}).get("id") or ""):
+        return web.json_response({"error": "no pending buy"}, status=404)
+    state = live.public()
+    if not state.get("wallet_trade") or not state.get("phantom"):
+        return web.json_response({"error": "wallet trading is off"}, status=400)
+    px = live.sol_price() or scanner.STATE.get("sol_usd")
+    if not px:
+        return web.json_response({"error": "no SOL price"}, status=400)
+    lamports = int(float(order["usd"]) / float(px) * 1_000_000_000)
+    if lamports < 1_000_000:
+        live.finish_order(order["id"], error="buy is under 0.001 SOL")
+        return web.json_response({"error": "buy is under 0.001 SOL"}, status=400)
+    quote_url = (
+        "https://api.jup.ag/swap/v1/quote"
+        f"?inputMint={SOL_MINT}&outputMint={order['mint']}"
+        f"&amount={lamports}&slippageBps=300"
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(quote_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                quote = await resp.json(content_type=None)
+                if resp.status != 200:
+                    raise RuntimeError("quote failed")
+            async with session.post(
+                "https://api.jup.ag/swap/v1/swap",
+                json={"quoteResponse": quote, "userPublicKey": state["phantom"], "wrapAndUnwrapSol": True},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                swap = await resp.json(content_type=None)
+                if resp.status != 200 or not swap.get("swapTransaction"):
+                    raise RuntimeError("swap failed")
+    except Exception:
+        live.finish_order(order["id"], error="Jupiter has no route for this token")
+        return web.json_response({"error": "Jupiter has no route for this token"}, status=502)
+    return web.json_response({
+        "id": order["id"],
+        "symbol": order.get("symbol") or "",
+        "usd": order.get("usd"),
+        "transaction": swap["swapTransaction"],
+    })
+
+
+async def api_phantom_done(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    live.finish_order(
+        (body or {}).get("id"),
+        signature=(body or {}).get("signature") or "",
+        error=(body or {}).get("error") or "",
+    )
+    return web.json_response(live.public())
+
+
 async def health(request):
     return web.json_response({"ok": True})
 
@@ -367,6 +485,11 @@ def make_app():
         web.get("/api/eye", api_eye),
         web.get("/api/chat", api_chat_get),
         web.post("/api/chat", api_chat_post),
+        web.get("/api/phantom", api_phantom_get),
+        web.post("/api/phantom", api_phantom_post),
+        web.post("/api/phantom/lock", api_phantom_lock),
+        web.post("/api/phantom/swap", api_phantom_swap),
+        web.post("/api/phantom/done", api_phantom_done),
         web.get("/", index),
         web.get("/favicon.ico", favicon),
     ])
