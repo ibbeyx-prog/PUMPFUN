@@ -16,6 +16,8 @@ from aiohttp import web
 
 import copytrader as ct
 import chat
+import eye
+import live
 import reports
 import scanner
 import skills
@@ -49,16 +51,28 @@ def wallets_stale():
 async def supervisor(app):
     global ENG
     ENG = ct.Paper()
+    live.halt("paper mode")
     session = aiohttp.ClientSession()
     asyncio.create_task(guard("manage", lambda: ENG.manage(session)))
     asyncio.create_task(guard("scan", lambda: scanner.scan_loop(ENG, session, STATUS)))
     asyncio.create_task(guard("reports", _reports))
+    asyncio.create_task(guard("eye", _eye))
     # Wallet copy stays available, but entries come from the scanner.
     if os.path.exists(ct.WALLETS):
         wallets = [m["wallet"] for m in json.load(open(ct.WALLETS)) if m.get("wallet")]
         STATUS["wallets"] = len(wallets)
         if wallets:
             asyncio.create_task(guard("watch", lambda w=wallets: ct.watch(ENG, session, w)))
+
+
+async def _eye():
+    while True:
+        try:
+            await eye.research()
+            await eye.review()
+        except Exception as e:
+            print("eye failed:", type(e).__name__, e)
+        await asyncio.sleep(600)
 
 
 async def _reports():
@@ -183,6 +197,14 @@ async def api_summary(request):
         run += p
         cum.append(round(run, 4))
     lesson = lessons(rows)
+    pnl = round(sum(pnls), 4)
+    sol_px = scanner.STATE.get("sol_usd")
+    if not sol_px or time.time() - (scanner.STATE.get("sol_usd_at") or 0) > 90:
+        try:
+            async with aiohttp.ClientSession() as session:
+                sol_px = await scanner.sol_usd(session) or sol_px
+        except Exception:
+            pass
     open_pos = []
     for mint, p in (ENG.pos if ENG else {}).items():
         item = {"mint": mint, "symbol": p.get("symbol") or "",
@@ -195,7 +217,9 @@ async def api_summary(request):
     return web.json_response({
         "status": STATUS,
         "paper_mode": True,
-        "total_pnl": round(sum(pnls), 4),
+        "total_pnl": pnl,
+        "sol_usd": None if not sol_px else round(float(sol_px), 2),
+        "total_pnl_usd": None if not sol_px else round(pnl * float(sol_px), 2),
         "closed": len(closed),
         "win_rate": (sum(1 for p in pnls if p > 0) / len(pnls)) if pnls else None,
         "best": max(pnls) if pnls else None,
@@ -203,15 +227,27 @@ async def api_summary(request):
         "skipped": sum(1 for r in rows if r["event"] == "SKIP"),
         "cum_pnl": cum,
         "open": open_pos,
-        "config": {k: ct.CFG[k] for k in ("size_sol", "ladder", "stop_loss_pct",
+        "config": {k: ct.CFG[k] for k in ("trade_usd", "reserve_usd", "budget_usd",
+                                           "one_trade_per_coin", "ladder", "stop_loss_pct",
                                            "max_open_positions", "max_chase_pct",
                                            "entry_score")},
+        "budget": ENG.budget_view() if ENG else {
+            "sol_usd": None, "start_usd": ct.CFG["budget_usd"], "equity_usd": ct.CFG["budget_usd"],
+            "realized_usd": 0, "deployed_usd": 0,
+            "available_usd": ct.CFG["budget_usd"] - ct.CFG["reserve_usd"],
+            "reserve_usd": ct.CFG["reserve_usd"], "trade_usd": ct.CFG["trade_usd"],
+        },
+        "live": live.public(),
         "scan": {"at": scanner.STATE["scanned_at"], "sources": scanner.STATE["sources"]},
         "lesson": lesson,
         "agent": tune.public(),
         "skills": skills.public(),
         "reports": reports.public(),
     })
+
+
+async def api_eye(request):
+    return web.json_response(eye.public())
 
 
 async def api_trades(request):
@@ -328,6 +364,7 @@ def make_app():
         web.get("/api/trades", api_trades),
         web.get("/api/wallets", api_wallets),
         web.get("/api/candidates", api_candidates),
+        web.get("/api/eye", api_eye),
         web.get("/api/chat", api_chat_get),
         web.post("/api/chat", api_chat_post),
         web.get("/", index),

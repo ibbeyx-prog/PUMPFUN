@@ -15,12 +15,17 @@ from collections import Counter, defaultdict
 import aiohttp
 
 CFG = json.load(open("config.json"))
+CFG.setdefault("budget_usd", 50)
+CFG.setdefault("trade_usd", 10)
+CFG.setdefault("reserve_usd", 5)
+CFG.setdefault("one_trade_per_coin", True)
 KEY = os.getenv("HELIUS_API_KEY") or CFG["helius_api_key"]
 DATA = os.getenv("DATA_DIR", ".")            # on Railway: mount a volume here
 os.makedirs(DATA, exist_ok=True)
 WALLETS = os.path.join(DATA, "wallets.json")
 TRADES = os.path.join(DATA, "trades.csv")
 STATE = os.path.join(DATA, "state.json")
+BANK = os.path.join(DATA, "bank.json")
 HELIUS = "https://api.helius.xyz"
 WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={KEY}"
 WSOL = "So11111111111111111111111111111111111111112"
@@ -136,6 +141,39 @@ async def price_sol(s, mint):
 
 
 # ───────────────────────── Discovery + scoring ─────────────────────────
+_SOL = {"price": None, "at": 0}
+
+
+async def sol_usd(session):
+    """SOL price in USD. DexScreener first, CoinGecko if that fails. Cached 60s."""
+    now = time.time()
+    if _SOL["price"] and now - _SOL["at"] < 60:
+        return _SOL["price"]
+    price = None
+    data = await get_json(session, f"https://api.dexscreener.com/latest/dex/tokens/{WSOL}")
+    pairs = [
+        p for p in (data or {}).get("pairs") or []
+        if p.get("chainId") == "solana" and (p.get("baseToken") or {}).get("address") == WSOL
+    ]
+    if pairs:
+        best = max(pairs, key=_pair_liq)
+        try:
+            price = float(best.get("priceUsd") or 0) or None
+        except (TypeError, ValueError):
+            price = None
+    if not price:
+        data = await get_json(session, "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")
+        try:
+            price = float(((data or {}).get("solana") or {}).get("usd") or 0) or None
+        except (TypeError, ValueError):
+            price = None
+    if price and 20 <= price <= 1000:
+        _SOL["price"] = price
+        _SOL["at"] = now
+        return price
+    return _SOL["price"]
+
+
 async def get_json(s, url, headers=None):
     for attempt in range(3):
         try:
@@ -294,6 +332,16 @@ async def cmd_score():
 class Paper:
     def __init__(self):
         self.pos = json.load(open(STATE)) if os.path.exists(STATE) else {}
+        for p in self.pos.values():
+            if not p.get("size_sol"):
+                p["size_sol"] = 0.1
+        self.bought = set()
+        if os.path.exists(TRADES):
+            with open(TRADES, newline="", encoding="utf-8", errors="replace") as f:
+                for row in csv.DictReader(f):
+                    if row.get("event") == "BUY" and row.get("mint"):
+                        self.bought.add(row["mint"])
+        self.bank = json.load(open(BANK)) if os.path.exists(BANK) else None
         self.seen = set()
         new = not os.path.exists(TRADES)
         self.f = open(TRADES, "a", newline="")
@@ -311,22 +359,101 @@ class Paper:
     def save(self):
         json.dump(self.pos, open(STATE, "w"))
 
-    def open(self, mint, wallet, price, symbol=""):
+    def _save_bank(self):
+        json.dump(self.bank, open(BANK, "w"), indent=2)
+
+    def _ensure_bank(self, px):
+        if self.bank:
+            return
+        self.bank = {
+            "start_usd": float(CFG["budget_usd"]),
+            "start_sol": float(CFG["budget_usd"]) / px,
+            "realized_sol": 0.0,
+        }
+        self._save_bank()
+
+    def _pos_size(self, p):
+        return float(p.get("size_sol") or 0)
+
+    def free_sol(self, px):
+        if not self.bank or not px:
+            return 0.0
+        deployed = sum(self._pos_size(p) * float(p.get("left") or 0) for p in self.pos.values())
+        reserve = float(CFG["reserve_usd"]) / px
+        return float(self.bank["start_sol"]) + float(self.bank.get("realized_sol") or 0) - deployed - reserve
+
+    def budget_view(self):
+        px = _SOL.get("price")
+        bank = self.bank or {}
+        start_sol = float(bank.get("start_sol") or 0)
+        realized = float(bank.get("realized_sol") or 0)
+        deployed = sum(self._pos_size(p) * float(p.get("left") or 0) for p in self.pos.values())
+        unreal = 0.0
+        for p in self.pos.values():
+            held = self._pos_size(p) * float(p.get("left") or 0)
+            unreal += held * ((p.get("last_x") or 1) - 1)
+        reserve = float(CFG["reserve_usd"])
+        free = self.free_sol(px) if px and bank else None
+
+        def usd(sol):
+            return None if not px or sol is None else round(sol * px, 2)
+
+        start_usd = bank.get("start_usd")
+        if start_usd is None:
+            start_usd = float(CFG["budget_usd"])
+        return {
+            "sol_usd": None if not px else round(px, 2),
+            "start_usd": round(float(start_usd), 2),
+            "equity_usd": usd(start_sol + realized + unreal) if bank else round(float(start_usd), 2),
+            "realized_usd": usd(realized) if bank else 0,
+            "deployed_usd": usd(deployed) if bank else 0,
+            "available_usd": usd(free) if free is not None else round(float(CFG["budget_usd"]) - reserve, 2),
+            "reserve_usd": reserve,
+            "trade_usd": float(CFG["trade_usd"]),
+        }
+
+    async def buy(self, session, mint, wallet, price, symbol=""):
+        if CFG.get("one_trade_per_coin", True) and (mint in self.bought or mint in self.pos):
+            self.log("SKIP", mint, wallet, note="already bought this coin")
+            return False
+        px = await sol_usd(session)
+        if not px:
+            self.log("SKIP", mint, wallet, note="no SOL price for budget")
+            return False
+        self._ensure_bank(px)
+        size = float(CFG["trade_usd"]) / px
+        free = self.free_sol(px)
+        if size > free + 1e-9:
+            self.log("SKIP", mint, wallet, note=f"budget: need {size:.4f} SOL, free {free:.4f} SOL")
+            return False
+        self.open(mint, wallet, price, symbol=symbol, size_sol=size)
+        return True
+
+    def open(self, mint, wallet, price, symbol="", size_sol=None):
+        if not size_sol or size_sol <= 0:
+            self.log("SKIP", mint, wallet, note="budget: no trade size")
+            return
         fill = price * (1 + CFG["sim_slippage"])
         self.pos[mint] = dict(entry=fill, left=1.0, tier=0, wallet=wallet,
-                              t0=time.time(), pnl=-CFG["fee_sol"], symbol=symbol)
+                              t0=time.time(), pnl=-CFG["fee_sol"], symbol=symbol,
+                              size_sol=float(size_sol))
+        self.bought.add(mint)
         label = f"{symbol} " if symbol else ""
-        self.log("BUY", mint, wallet, fill, note=f"{label}size {CFG['size_sol']} SOL")
+        self.log("BUY", mint, wallet, fill, note=f"{label}size {size_sol:.4f} SOL")
         self.save()
 
     def sell(self, mint, price, frac, why):
         p = self.pos[mint]
         frac = min(frac, p["left"])
+        size = self._pos_size(p)
         x = price / p["entry"]
-        proceeds = CFG["size_sol"] * frac * x * (1 - CFG["sim_slippage"])
-        pnl = proceeds - CFG["size_sol"] * frac - CFG["fee_sol"]
+        proceeds = size * frac * x * (1 - CFG["sim_slippage"])
+        pnl = proceeds - size * frac - CFG["fee_sol"]
         p["left"] -= frac
         p["pnl"] += pnl
+        if self.bank is not None:
+            self.bank["realized_sol"] = float(self.bank.get("realized_sol") or 0) + pnl
+            self._save_bank()
         self.log("SELL", mint, p["wallet"], price, x, pnl, why)
         if p["left"] <= 1e-9:
             self.log("CLOSED", mint, p["wallet"], price, x, p["pnl"], "position total")
@@ -402,7 +529,7 @@ class Paper:
             self.log("SKIP", mint, wallet, price, price / their,
                      note="price already ran vs wallet entry")
             return
-        self.open(mint, wallet, price)
+        await self.buy(s, mint, wallet, price)
 
 
 async def watch(eng, s, wallets):

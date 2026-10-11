@@ -2,6 +2,21 @@ import { useEffect, useState, useCallback } from "react";
 
 const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s);
 const sol = (n) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${n.toFixed(3)}`);
+const usd = (n) => {
+  if (n == null) return null;
+  const abs = Math.abs(n);
+  const body = abs >= 100 ? abs.toFixed(0) : abs.toFixed(2);
+  return `${n < 0 ? "-" : "+"}$${Number(body).toLocaleString()}`;
+};
+const dollars = (n, signed = false) => {
+  if (n == null) return "–";
+  const num = Number(n);
+  if (Number.isNaN(num)) return "–";
+  const abs = Math.abs(num);
+  const body = abs >= 100 ? abs.toFixed(0) : abs.toFixed(2);
+  const text = `$${Number(body).toLocaleString()}`;
+  return signed ? `${num < 0 ? "-" : "+"}${text}` : text;
+};
 const pct = (n) => (n == null ? "–" : `${(n * 100).toFixed(0)}%`);
 const tone = (n) => (n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-400");
 const adviceTone = (label) =>
@@ -156,6 +171,7 @@ export default function App() {
   const [trades, setTrades] = useState([]);
   const [wallets, setWallets] = useState([]);
   const [cands, setCands] = useState({ candidates: [], sources: {} });
+  const [eye, setEye] = useState({ knowledge: [] });
   const [err, setErr] = useState("");
 
   const get = useCallback(
@@ -172,10 +188,10 @@ export default function App() {
     let stop = false;
     const tick = async () => {
       try {
-        const [s, t, w, c] = await Promise.all([
-          get("/api/summary"), get("/api/trades?limit=100"), get("/api/wallets"), get("/api/candidates"),
+        const [s, t, w, c, e] = await Promise.all([
+          get("/api/summary"), get("/api/trades?limit=100"), get("/api/wallets"), get("/api/candidates"), get("/api/eye"),
         ]);
-        if (!stop) { setSum(s); setTrades(t); setWallets(w); setCands(c); setErr(""); }
+        if (!stop) { setSum(s); setTrades(t); setWallets(w); setCands(c); setEye(e); setErr(""); }
       } catch (e) {
         if (e.message === "unauthorized") { localStorage.removeItem("dash_token"); setToken(""); }
         else setErr("Can't reach server");
@@ -204,11 +220,63 @@ export default function App() {
         </header>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Card label="Total PnL (SOL)" value={sol(sum.total_pnl)} cls={tone(sum.total_pnl)} sub={`${sum.closed} closed trades`} />
+          <Card
+            label="Total PnL"
+            value={
+              <span>
+                {sol(sum.total_pnl)} <span className="text-base font-medium text-slate-400">SOL</span>
+                {sum.total_pnl_usd != null && (
+                  <span className="text-base font-medium"> · {usd(sum.total_pnl_usd)}</span>
+                )}
+              </span>
+            }
+            cls={tone(sum.total_pnl)}
+            sub={`${sum.closed} closed trades${sum.sol_usd ? ` · SOL $${sum.sol_usd}` : ""}`}
+          />
           <Card label="Win rate" value={pct(sum.win_rate)} sub={`best ${sol(sum.best)} · worst ${sol(sum.worst)}`} />
-          <Card label="Open positions" value={`${sum.open.length}/${cfg.max_open_positions}`} sub={`size ${cfg.size_sol} SOL each`} />
+          <Card label="Open positions" value={`${sum.open.length}/${cfg.max_open_positions}`} sub={`$${cfg.trade_usd} per trade · one per coin`} />
           <Card label="Skipped signals" value={sum.skipped} sub={`chase cap ${pct(cfg.max_chase_pct)}`} />
         </div>
+
+        <Panel title="Budget" right={<span className="text-xs text-slate-500">{sum.budget?.sol_usd ? `SOL $${sum.budget.sol_usd}` : ""}</span>}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 text-sm">
+            {[
+              ["Start", dollars(sum.budget?.start_usd)],
+              ["Equity", dollars(sum.budget?.equity_usd, true)],
+              ["Realized", dollars(sum.budget?.realized_usd, true)],
+              ["In trades", dollars(sum.budget?.deployed_usd)],
+              ["Free to invest", dollars(sum.budget?.available_usd)],
+              ["Reserve", dollars(sum.budget?.reserve_usd)],
+              ["SOL price", sum.budget?.sol_usd ? `$${sum.budget.sol_usd}` : "–"],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+                <div className="mt-1 text-lg font-medium">{value}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="Mode" right={<span className="text-xs text-amber-300">paper only</span>}>
+          <div className="px-4 py-3 text-sm text-slate-300">
+            Live execution is off. Buys and sells on this dashboard are simulated, using the ${cfg.trade_usd} paper size.
+          </div>
+        </Panel>
+
+        <Panel title="Eye">
+          <div className="px-4 py-3 text-xs uppercase tracking-wide text-slate-500">What Eye has learned</div>
+          <div className="divide-y divide-slate-800">
+            {(eye.knowledge || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">No notes yet. Eye writes them after a research pass or a review.</div>}
+            {(eye.knowledge || []).map((n, i) => (
+              <div key={i} className="px-4 py-3 text-sm">
+                <span className={`mr-2 rounded px-1.5 py-0.5 text-xs ${n.src === "web" ? "bg-sky-500/15 text-sky-300" : "bg-amber-500/15 text-amber-300"}`}>
+                  {n.src === "web" ? "market" : "own trades"}
+                </span>
+                <span className="text-slate-200">{n.text}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
 
         <Panel title="24h reports" right={
           <span className="text-xs text-slate-500">

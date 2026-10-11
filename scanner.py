@@ -108,12 +108,11 @@ def bird_key():
 
 
 async def sol_usd(session):
-    data = await ct.get_json(session, f"{DEX}/latest/dex/tokens/{ct.WSOL}")
-    pairs = [p for p in (data or {}).get("pairs") or [] if p.get("chainId") == "solana"]
-    if not pairs:
-        return None
-    best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
-    return num(best.get("priceUsd"))
+    price = await ct.sol_usd(session)
+    if price:
+        STATE["sol_usd"] = price
+        STATE["sol_usd_at"] = time.time()
+    return price
 
 
 async def from_pump(session, book):
@@ -532,7 +531,9 @@ async def scan_loop(eng, session, status):
             if not price:
                 eng.log("SKIP", mint, "+".join(row["sources"]), note="no DexScreener SOL price")
                 continue
-            eng.open(mint, "+".join(row["sources"]), price, symbol=row.get("symbol") or "")
+            opened = await eng.buy(session, mint, "+".join(row["sources"]), price, symbol=row.get("symbol") or "")
+            if not opened:
+                continue
             entered += 1
         if entered:
             status["phase"] = f"paper entry · {status['phase']}"
