@@ -99,7 +99,12 @@ def _closed_rows():
     if not os.path.exists(path):
         return []
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
-        return [r for r in csv.DictReader(f) if r.get("event") == "CLOSED"]
+        rows = list(csv.DictReader(f))
+    last = -1
+    for i, row in enumerate(rows):
+        if row.get("event") == "RESET":
+            last = i
+    return [row for row in rows[last + 1:] if row.get("event") == "CLOSED"]
 
 
 def _bucket(rows):
@@ -117,8 +122,46 @@ def _wr(xs):
     return sum(1 for x in xs if x > 0) / len(xs) if xs else None
 
 
+def locked():
+    return bool(_load().get("strategy_locked"))
+
+
+def lock_strategy(why):
+    data = _load()
+    if data.get("strategy_locked"):
+        return False
+    data["strategy_locked"] = True
+    data["changes"].insert(0, {
+        "time": time.strftime("%F %T"),
+        "what": "strategy",
+        "from": "grinding",
+        "to": "stick",
+        "why": why,
+    })
+    data["changes"] = data["changes"][:100]
+    _save(data)
+    return True
+
+
+def install_preset(values, why):
+    """Replace the paper rules with one grind preset. A locked strategy is left alone."""
+    if locked():
+        return False
+    data = _load()
+    for name, new in values.items():
+        if name not in BOUNDS:
+            continue
+        _set(data, name, new, why)
+    data["reviewed_closes"] = 0
+    data["changes"] = data["changes"][:100]
+    _save(data)
+    return True
+
+
 def review():
     """Move the paper rules toward whatever the closed trades support. One pass per new close."""
+    if locked():
+        return _load()
     rows = _closed_rows()
     data = _load()
     if len(rows) < 5 or len(rows) == data.get("reviewed_closes"):

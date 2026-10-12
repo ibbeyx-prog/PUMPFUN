@@ -289,7 +289,7 @@ def desk_view(rows, open_pos, lesson):
 
 
 async def api_summary(request):
-    rows = read_trades()
+    rows = eye.current_rows(read_trades())
     closed = [r for r in rows if r["event"] == "CLOSED"]
     pnls = [float(r["sol_pnl"]) for r in closed]
     cum, run = [], 0.0
@@ -355,7 +355,7 @@ async def api_eye(request):
 
 async def api_trades(request):
     limit = int(request.query.get("limit", 200))
-    rows = read_trades()
+    rows = eye.current_rows(read_trades())
     tips = eye.improvements(rows)
     out = []
     for r in rows[-limit:][::-1]:
@@ -368,7 +368,7 @@ async def api_trades(request):
 
 
 async def api_candidates(request):
-    rows = read_trades()
+    rows = eye.current_rows(read_trades())
     lesson = lessons(rows)
     tips = eye.improvements(rows)
     candidates = []
@@ -386,7 +386,7 @@ async def api_candidates(request):
 
 
 def chat_context():
-    rows = read_trades()
+    rows = eye.current_rows(read_trades())
     lesson = lessons(rows)
     closed = []
     for r in rows:

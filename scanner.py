@@ -589,6 +589,7 @@ async def scan_once(session):
 async def scan_loop(eng, session, status):
     while True:
         tune.review()
+        eye.tend_wallet(eng)
         eye.choose_trade_usd()
         ranked, sources = await scan_once(session)
         skills.observe(ranked)

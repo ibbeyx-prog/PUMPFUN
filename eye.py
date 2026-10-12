@@ -293,10 +293,7 @@ def choose_trade_usd():
 
 
 def _closed_rows():
-    if not os.path.exists(ct.TRADES):
-        return []
-    with open(ct.TRADES, newline="", encoding="utf-8", errors="replace") as f:
-        return [r for r in csv.DictReader(f) if r.get("event") == "CLOSED"]
+    return _run_closes()
 
 
 def _num(row, key):
@@ -490,8 +487,93 @@ async def _read_market(session):
     return {"boosts": boosts, "names": count, "chasing": chasing, "text": text[:240]}
 
 
+PRESETS = (
+    {"min_sources": 3, "entry_score": 70, "max_change_5m": 45, "early_cut_x": 0.80, "early_cut_min": 10},
+    {"min_sources": 3, "entry_score": 80, "max_change_5m": 40, "early_cut_x": 0.75, "early_cut_min": 8},
+    {"min_sources": 2, "entry_score": 75, "max_change_5m": 55, "early_cut_x": 0.85, "early_cut_min": 12},
+    {"min_sources": 3, "entry_score": 65, "max_change_5m": 60, "early_cut_x": 0.80, "early_cut_min": 15},
+)
+
+
+def current_rows(rows):
+    last = -1
+    for i, row in enumerate(rows):
+        if row.get("event") == "RESET":
+            last = i
+    return list(rows[last + 1:])
+
+
+def _run_closes():
+    if not os.path.exists(ct.TRADES):
+        return []
+    with open(ct.TRADES, newline="", encoding="utf-8", errors="replace") as handle:
+        rows = list(csv.DictReader(handle))
+    return [row for row in current_rows(rows) if row.get("event") == "CLOSED"]
+
+
+def _profitable(closed):
+    if len(closed) < 15:
+        return False
+    pnl = sum(_num(row, "sol_pnl") for row in closed)
+    wins = sum(1 for row in closed if _num(row, "sol_pnl") > 0)
+    return pnl > 0 and wins / len(closed) >= 0.30
+
+
+def strategy_line():
+    if tune.locked():
+        return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
+    data = tune._load()
+    number = int(data.get("grind") or 0) % len(PRESETS) + 1
+    return f"Grinding strategy {number} of {len(PRESETS)}. Eye refills the wallet to $50 when nothing is left above the fee reserve."
+
+
+def _maybe_lock():
+    if tune.locked():
+        return "Sticking with this strategy. The current run is paying."
+    if not _profitable(_run_closes()):
+        return ""
+    tune.lock_strategy("Fifteen or more closes are net positive and at least 30% won. Stick with these rules.")
+    return "This run is paying. Eye will stick with these rules."
+
+
+def tend_wallet(eng):
+    """Refill a flat paper wallet that can no longer trade. A paying strategy is kept."""
+    if eng is None or eng.pos:
+        return ""
+    try:
+        import scanner
+        px = scanner.STATE.get("sol_usd")
+    except Exception:
+        px = None
+    equity = eng.equity_usd(px)
+    if equity is None or not _run_closes():
+        return ""
+    if equity - eng.fee_reserve_usd() >= 4:
+        return ""
+    if tune.locked() or _profitable(_run_closes()):
+        if not tune.locked():
+            tune.lock_strategy("The run paid, so Eye kept the rules when the wallet was refilled.")
+        did = "Strategy stays. Refilled the paper wallet to $50."
+    else:
+        data = tune._load()
+        nxt = int(data.get("grind") or 0) + 1
+        data["grind"] = nxt
+        tune._save(data)
+        preset = PRESETS[nxt % len(PRESETS)]
+        tune.install_preset(preset, f"Grind {nxt}: the wallet had nothing left above the fee reserve.")
+        did = f"Wallet was empty. Refilled to $50 and moved to strategy {nxt % len(PRESETS) + 1} of {len(PRESETS)}."
+    if not eng.refill(px):
+        return ""
+    add_note("trades", did, "grind")
+    print("EYE", did)
+    return did
+
+
 def _grow_once(ids, recent, market):
     """Move at most one paper rule. Never touches budget, size, or live trading."""
+    held = _maybe_lock()
+    if held:
+        return held
     n = len(recent)
     wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
     wr = (wins / n) if n else 0
@@ -709,5 +791,6 @@ def public():
         "trading": True,
         "paper": True,
         "may_hire": MAY_HIRE,
+        "strategy": strategy_line(),
         "assistants": data.get("assistants") or [],
     }

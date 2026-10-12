@@ -362,6 +362,30 @@ class Paper:
     def _save_bank(self):
         json.dump(self.bank, open(BANK, "w"), indent=2)
 
+    def equity_usd(self, px):
+        if not self.bank or not px:
+            return None
+        sol = float(self.bank.get("start_sol") or 0) + float(self.bank.get("realized_sol") or 0)
+        for p in self.pos.values():
+            held = self._pos_size(p) * float(p.get("left") or 0)
+            sol += held * ((p.get("last_x") or 1) - 1)
+        return sol * float(px)
+
+    def refill(self, px):
+        """Start the paper wallet over at the budget. Does not touch a real Phantom account."""
+        if not px:
+            return False
+        self.pos.clear()
+        self.save()
+        self.bank = {
+            "start_usd": float(CFG["budget_usd"]),
+            "start_sol": float(CFG["budget_usd"]) / float(px),
+            "realized_sol": 0.0,
+        }
+        self._save_bank()
+        self.log("RESET", "", "paper", note="refilled to $50")
+        return True
+
     def _ensure_bank(self, px):
         if self.bank:
             return

@@ -544,6 +544,7 @@ export default function App() {
               <div className="px-4 py-3 text-sm text-slate-300">
                 Eye's assistants work on its behalf. Each one reads the scan or the book and briefs Eye before Eye changes a rule.
               </div>
+              {eye.strategy && <div className="px-4 pb-3 text-sm text-slate-200">{eye.strategy}</div>}
               <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">
                 {eye.may_hire ? "Briefs for Eye" : "Hiring is off"}
               </div>
