@@ -7,9 +7,26 @@ Env vars:
   DASH_TOKEN       password for the dashboard/API (strongly recommended)
   DATA_DIR         where state is stored (mount a Railway volume, e.g. /data)
   RESCORE_HOURS    how often to re-rank wallets (default 24)
+  FOMO_API_KEY     optional, fomo.family holder board
   PORT             set by Railway
 """
 import asyncio, csv, json, os, time
+
+
+def _load_local_env():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_env()
 
 import aiohttp
 from aiohttp import web
@@ -70,8 +87,15 @@ async def _eye(session):
     while True:
         wait = 600
         try:
+            eye.staff()
             await eye.research()
             data = await eye.grow(session)
+            stale = any(
+                "nothing to put in front of you" in (a.get("last") or "")
+                for a in (data.get("assistants") or [])
+            )
+            if stale and "has not posted names" not in (data.get("market") or ""):
+                eye.staff()
             if not retried and "has not posted names" in (data.get("market") or ""):
                 retried = True
                 wait = 50
@@ -194,6 +218,76 @@ def advise_candidate(c, lesson):
     return {"label": "Wait", "text": "Not a clean entry yet."}
 
 
+def desk_view(rows, open_pos, lesson):
+    """Role cards for the trading desk. Missing feeds stay marked off."""
+    last = ""
+    fills = 0
+    for row in reversed(rows):
+        event = row.get("event")
+        if event in ("BUY", "SELL"):
+            fills += 1
+        if not last and event == "BUY":
+            note = row.get("note") or ""
+            last = note.split(" size ", 1)[0].strip() or (row.get("mint") or "")[:4]
+        if last and fills > 12:
+            break
+    sources = scanner.STATE.get("sources") or {}
+    cands = scanner.STATE.get("candidates") or []
+    enters = sum(1 for c in cands if c.get("decision") == "enter")
+    live_state = live.public()
+    budget = ENG.budget_view() if ENG else {}
+    free = budget.get("available_usd")
+    free_txt = "–" if free is None else f"${free:g}"
+    rug_n = (sources.get("rugcheck") or {}).get("n") or 0
+    alive = [name for name, src in sources.items() if src.get("ok")]
+    roles = [
+        {"id": "chief", "name": "Chief", "value": last or "none", "sub": "last paper pick"},
+        {"id": "scan", "name": "Scan", "value": str(len(cands)), "sub": f"{enters} would enter"},
+        {"id": "vet", "name": "Vet", "value": str(rug_n), "sub": "RugCheck reads"},
+        {"id": "social", "name": "Social", "value": "off", "sub": "X and Telegram are not connected"},
+        {"id": "size", "name": "Size", "value": f"${ct.CFG.get('trade_usd', 10):g}", "sub": f"free {free_txt}"},
+        {"id": "fills", "name": "Fills", "value": str(fills), "sub": f"{len(open_pos)} open"},
+        {"id": "risk", "name": "Risk", "value": "halted" if live_state.get("halted") else "open", "sub": f"cap ${live_state.get('max_trade_usd', 15):g} · lock {'on' if live_state.get('locked') else 'unset'}"},
+        {"id": "crawler", "name": "Crawler", "value": str(len(alive)), "sub": ", ".join(alive) or "waiting for a scan"},
+    ]
+    catalog = [
+        ("pump.fun", "launches"),
+        ("dexscreener", "pairs"),
+        ("gmgn", "wallets"),
+        ("birdeye", "trending"),
+        ("rugcheck", "rug"),
+        ("bubblemap", "holders"),
+        ("fomo", "holders"),
+    ]
+    feeds = []
+    for name, kind in catalog:
+        src = sources.get(name) or {}
+        if src.get("ok"):
+            state = "live"
+        elif src:
+            state = "key" if "key" in (src.get("error") or "").lower() else "down"
+        else:
+            state = "off"
+        feeds.append({"name": "FOMO" if name == "fomo" else name, "kind": kind, "state": state})
+    feeds.append({"name": "Jupiter", "kind": "swaps", "state": "ready"})
+    feeds.append({"name": "Phantom", "kind": "wallet", "state": "live" if live_state.get("phantom") else "off"})
+    feeds.append({"name": "Solscan", "kind": "explorer", "state": "link"})
+    for name, kind in (
+        ("X", "calls"), ("Telegram", "chats"),
+        ("Axiom", "trading"), ("Robinhood", "on-chain"), ("Dune", "data"),
+        ("TradingView", "charts"), ("CoinGlass", "positioning"), ("CoinMarketCap", "rankings"),
+    ):
+        feeds.append({"name": name, "kind": kind, "state": "off"})
+    hired = eye.public().get("assistants") or []
+    return {
+        "roles": roles,
+        "feeds": feeds,
+        "note": lesson.get("text") or "",
+        "hired": [a.get("name") for a in hired],
+        "may_hire": eye.MAY_HIRE,
+    }
+
+
 async def api_summary(request):
     rows = read_trades()
     closed = [r for r in rows if r["event"] == "CLOSED"]
@@ -251,6 +345,7 @@ async def api_summary(request):
         "agent": tune.public(),
         "skills": skills.public(),
         "reports": reports.public(),
+        "desk": desk_view(rows, open_pos, lesson),
     })
 
 

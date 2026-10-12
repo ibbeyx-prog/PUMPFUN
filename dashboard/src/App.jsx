@@ -270,6 +270,34 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-4 px-4 py-5">
+        <section className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          {(sum.desk?.roles || []).map((role) => (
+            <div key={role.id} className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{role.name}</div>
+              <div className="num mt-1 truncate text-lg text-slate-100">{role.value}</div>
+              <div className="mt-1 text-xs text-slate-500">{role.sub}</div>
+            </div>
+          ))}
+        </section>
+
+        {sum.desk?.may_hire && (
+          <div className="text-xs text-slate-500">
+            Assisting Eye{(sum.desk?.hired || []).length ? `: ${(sum.desk.hired || []).join(", ")}` : ""}. They brief Eye before it decides.
+          </div>
+        )}
+
+        <section className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-4">
+          <div className="mb-3 text-sm font-medium text-slate-200">Meme-coin feeds</div>
+          <div className="flex flex-wrap gap-2">
+            {(sum.desk?.feeds || []).map((feed) => (
+              <span key={feed.name} className={`rounded-full px-2.5 py-1 text-xs ${feed.state === "live" || feed.state === "ready" || feed.state === "link" ? "bg-emerald-400/10 text-emerald-200" : feed.state === "key" || feed.state === "down" ? "bg-amber-400/10 text-amber-200" : "bg-white/5 text-slate-500"}`}>
+                {feed.name}
+                <span className="ml-1 text-[10px] uppercase tracking-wide opacity-70">{feed.state}</span>
+              </span>
+            ))}
+          </div>
+        </section>
+
         <section className="grid gap-3 lg:grid-cols-5">
           <div className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-5 lg:col-span-3">
             <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Total PnL</div>
@@ -287,7 +315,7 @@ export default function App() {
           <div className="grid grid-cols-2 gap-3 lg:col-span-2">
             {[
               ["Win rate", pct(sum.win_rate), `best ${pnlUsd(sum.best) || "–"} · worst ${pnlUsd(sum.worst) || "–"}`],
-              ["Open", `${sum.open.length}/${cfg.max_open_positions}`, `$${cfg.trade_usd} per trade · one per coin`],
+              ["Open", `${sum.open.length}/${cfg.max_open_positions}`, `$${sum.budget?.trade_usd ?? cfg.trade_usd} per trade · one per coin`],
               ["Skipped", sum.skipped, `chase cap ${pct(cfg.max_chase_pct)}`],
               ["Closed PnL", pnlUsd(sum.total_pnl) || "–", `${sum.closed} closed trades`],
             ].map(([label, value, sub]) => (
@@ -317,7 +345,7 @@ export default function App() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/20 bg-amber-400/[0.07] px-4 py-3 text-sm">
           <span className="font-medium text-amber-200">paper only</span>
-          <span className="text-amber-100/80">{`Live execution is off. Buys and sells on this dashboard are simulated, using the $${cfg.trade_usd} paper size.`}</span>
+          <span className="text-amber-100/80">{sum.live?.wallet_trade ? "Wallet trading is on. Each buy still needs the lock code and a Phantom approval." : `Paper buys are sized like a Phantom swap. Eye picks the amount, and $${sum.budget?.reserve_usd ?? cfg.reserve_usd} stays in the wallet for fees.`}</span>
         </div>
 
         <nav className="flex gap-1 rounded-2xl border border-white/[0.07] bg-[#141820]/70 p-1">
@@ -514,7 +542,20 @@ export default function App() {
 
             <Shell title="Eye">
               <div className="px-4 py-3 text-sm text-slate-300">
-                Eye trades the paper book on its own. It reads DexScreener and the live scan, then changes one rule from its recent closes.
+                Eye's assistants work on its behalf. Each one reads the scan or the book and briefs Eye before Eye changes a rule.
+              </div>
+              <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                {eye.may_hire ? "Briefs for Eye" : "Hiring is off"}
+              </div>
+              <div className="divide-y divide-white/[0.05]">
+                {(eye.assistants || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">No assistants yet. Eye hires them on its next pass.</div>}
+                {(eye.assistants || []).map((a) => (
+                  <div key={a.name} className="px-4 py-3 text-sm">
+                    <div className="text-slate-200">{a.name}</div>
+                    <div className="mt-1 text-xs text-slate-500">{a.job}</div>
+                    {a.last && <div className="mt-2 text-slate-300">{a.last}</div>}
+                  </div>
+                ))}
               </div>
               {eye.market && <div className="px-4 pb-3 text-xs text-slate-500">{eye.market}</div>}
               <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">How Eye is growing</div>

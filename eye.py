@@ -16,6 +16,32 @@ import tune
 
 PATH = os.path.join(ct.DATA, "eye_knowledge.json")
 LOCKED = {"budget_usd", "trade_usd", "reserve_usd", "one_trade_per_coin", "size_sol"}
+# Operator grant. Paper assistants only. None of them can spend, resize, or resume live trading.
+MAY_HIRE = True
+ALLOWED_POWERS = {"read_scan", "read_trades", "write_note", "halt_live"}
+DENIED_NAMES = ("trade", "trader", "phantom", "spend", "spender", "size", "sizer", "wallet", "budget", "live")
+ROSTER = (
+    {
+        "name": "Vet",
+        "job": "Checks rugs and holder maps, then briefs Eye on what is safe to look at.",
+        "powers": ["read_scan", "write_note"],
+    },
+    {
+        "name": "Scan watch",
+        "job": "Reads the scan for Eye and puts the strongest names in front of it.",
+        "powers": ["read_scan", "write_note"],
+    },
+    {
+        "name": "Scribe",
+        "job": "Reviews the closed book and tells Eye whether it is paying.",
+        "powers": ["read_trades", "write_note"],
+    },
+    {
+        "name": "Risk",
+        "job": "Watches the book for Eye and keeps the wallet disarmed while it loses.",
+        "powers": ["read_trades", "halt_live", "write_note"],
+    },
+)
 HOURS = float(os.getenv("EYE_RESEARCH_HOURS", "24"))
 
 
@@ -214,6 +240,56 @@ async def review(session=None, complete=None):
     if parsed.get("halt_live") is True:
         live.halt("eye")
     return _load()
+
+
+def choose_trade_usd():
+    """How much of the Phantom-style paper wallet Eye will swap next.
+
+    The wallet always keeps $3 to $5 for fees. Eye sizes the rest from the
+    fresh book, then from whether recent closes are paying.
+    """
+    px = None
+    try:
+        import scanner
+        px = scanner.STATE.get("sol_usd")
+    except Exception:
+        px = None
+    equity = float(ct.CFG.get("budget_usd") or 50)
+    path = os.path.join(ct.DATA, "bank.json")
+    if px and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                bank = json.load(handle)
+            start = float(bank.get("start_sol") or 0)
+            realized = float(bank.get("realized_sol") or 0)
+            if start:
+                equity = (start + realized) * float(px)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    reserve = min(5.0, max(3.0, float(ct.CFG.get("reserve_usd") or 5)))
+    ct.CFG["reserve_usd"] = reserve
+    free = equity - reserve
+    closed = _closed_rows()
+    n = len(closed)
+    recent = closed[-15:]
+    wins = sum(1 for row in recent if _num(row, "sol_pnl") > 0)
+    wr = (wins / len(recent)) if recent else 0
+    if free < 4:
+        size = 0
+    elif n < 5:
+        size = min(8.0, max(4.0, round(equity * 0.10, 2)))
+    elif wr < 0.25:
+        size = 4.0
+    elif wr < 0.45:
+        size = min(8.0, max(4.0, round(equity * 0.10, 2)))
+    else:
+        size = min(12.0, max(6.0, round(equity * 0.15, 2)))
+    if size:
+        size = min(size, round(free, 2))
+    if size < 4:
+        size = 0
+    ct.CFG["trade_usd"] = round(size, 2)
+    return ct.CFG["trade_usd"]
 
 
 def _closed_rows():
@@ -492,8 +568,134 @@ async def grow(session=None):
     did = _grow_once({r["id"] for r in improvements()}, recent, market)
     add_note("web", market["text"], "dexscreener")
     add_note("trades", did, "own trades")
+    briefed = [a.get("name") for a in (_load().get("assistants") or []) if a.get("last")]
+    if briefed:
+        did = did.rstrip() + " " + ", ".join(briefed) + " briefed Eye first."
     _remember(market, did, recent)
     print("EYE", did)
+    return _load()
+
+
+def public():
+    data = _load()
+def _blocked_name(name):
+    words = re.split(r"[^a-z0-9]+", str(name or "").lower())
+    return any(word in DENIED_NAMES for word in words)
+
+
+def hire(name, job, powers):
+    """Create one paper assistant. Spending, size, and live trading stay out of reach."""
+    if not MAY_HIRE:
+        return False, "Eye does not have permission to hire."
+    name = " ".join(str(name or "").split())[:40]
+    job = " ".join(str(job or "").split())[:180]
+    if not name or not job or _blocked_name(name):
+        return False, "Eye cannot hire an agent that spends, sizes, or trades the wallet."
+    powers = [p for p in powers if p in ALLOWED_POWERS]
+    if not powers:
+        return False, "That agent has no paper job Eye is allowed to give."
+    data = _load()
+    assistants = data.setdefault("assistants", [])
+    if any(a.get("name") == name for a in assistants):
+        return False, "Already hired."
+    if len(assistants) >= len(ROSTER):
+        return False, "Eye already has a full paper desk."
+    assistants.append({
+        "name": name,
+        "job": job,
+        "powers": powers,
+        "paper": True,
+        "hired": time.strftime("%F %T"),
+        "last": "",
+    })
+    data["may_hire"] = True
+    _save(data)
+    add_note("trades", f"Hired {name}. {job}", "eye hire")
+    print("EYE hired", name)
+    return True, name
+
+
+def _scan_state():
+    try:
+        import scanner
+        return scanner.STATE.get("candidates") or [], scanner.STATE.get("sources") or {}
+    except Exception:
+        return [], {}
+
+
+def _assist_text(agent):
+    """A briefing for Eye, written the way a staff assistant would."""
+    powers = set(agent.get("powers") or [])
+    names, sources = _scan_state()
+    if agent.get("name") == "Vet":
+        rug = sources.get("rugcheck") or {}
+        bubble = sources.get("bubblemap") or {}
+        rug_txt = "live" if rug.get("ok") else "not reporting yet"
+        if bubble.get("ok"):
+            bubble_txt = "I can read holder clusters."
+        else:
+            bubble_txt = "I cannot check holder clusters until a Bubblemaps key is set."
+        return f"Eye, I checked the feeds for you. RugCheck is {rug_txt}. {bubble_txt}"
+    if "read_scan" in powers:
+        enters = [c for c in names if c.get("decision") == "enter"]
+        enters.sort(key=lambda c: -(c.get("score") or 0))
+        if not names:
+            return "Eye, I looked at the scan for you. It has not posted names yet, so I have nothing to put in front of you."
+        if not enters:
+            return f"Eye, I went through {len(names)} names for you. None of them is a clean entry."
+        front = ", ".join(
+            f"{c.get('symbol') or 'a name'} at {c.get('score')}"
+            for c in enters[:3]
+        )
+        return f"Eye, I went through {len(names)} names for you. I would put {front} in front of you."
+    closed = _closed_rows()
+    n = len(closed)
+    wins = sum(1 for row in closed if _num(row, "sol_pnl") > 0)
+    pnl = sum(_num(row, "sol_pnl") for row in closed)
+    if "halt_live" in powers:
+        if live.public().get("wallet_trade"):
+            live.halt("eye")
+            return f"Eye, the book is still losing, {wins} of {n} closes won, so I halted wallet trading for you."
+        return (
+            f"Eye, I checked the wallet for you. It is already off. "
+            f"{wins} of {n} closes won, {pnl:.3f} SOL, so I am not asking you to arm it."
+        )
+    if n < 5:
+        return "Eye, I do not have enough closed trades yet to tell you whether the book is paying."
+    return (
+        f"Eye, I reviewed the book for you. {wins} of {n} closes won, {pnl:.3f} SOL. "
+        f"That is short of a 30% win rate, so I would keep the rules where they are."
+    )
+
+
+def staff():
+    """Hire the paper desk once, then let each assistant write one note."""
+    if not MAY_HIRE:
+        return _load()
+    data = _load()
+    data["may_hire"] = True
+    _save(data)
+    hired = {a.get("name") for a in data.get("assistants") or []}
+    for spec in ROSTER:
+        if spec["name"] not in hired:
+            hire(spec["name"], spec["job"], spec["powers"])
+    data = _load()
+    roster = {spec["name"]: spec for spec in ROSTER}
+    notes_out = []
+    for agent in data.get("assistants") or []:
+        spec = roster.get(agent.get("name"))
+        if spec:
+            agent["job"] = spec["job"]
+            agent["powers"] = list(spec["powers"])
+        text = _assist_text(agent)[:240]
+        if text and text != agent.get("last"):
+            agent["last"] = text
+            agent["seen"] = time.strftime("%F %T")
+            notes_out.append(f"{agent['name']} for Eye: {text}")
+    if notes_out:
+        _save(data)
+        for text in notes_out:
+            add_note("trades", text, "assistant")
     return _load()
 
 
@@ -506,6 +708,6 @@ def public():
         "market": data.get("market") or "",
         "trading": True,
         "paper": True,
-        "last_research": data.get("last_research") or 0,
-        "next_research": data.get("next_research") or 0,
+        "may_hire": MAY_HIRE,
+        "assistants": data.get("assistants") or [],
     }

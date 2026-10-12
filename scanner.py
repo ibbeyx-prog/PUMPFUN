@@ -11,8 +11,11 @@ import os
 import time
 import urllib.request
 
+import aiohttp
+
 import checks
 import copytrader as ct
+import eye
 import live
 import skills
 import tune
@@ -23,6 +26,9 @@ PUMP = "https://frontend-api-v3.pump.fun"
 DEX = "https://api.dexscreener.com"
 GMGN = "https://gmgn.ai/defi/quotation/v1/rank/sol/swaps"
 BIRD = "https://public-api.birdeye.so/defi/token_trending"
+FOMO = "https://api.fomoapi.io/v2/leaderboard/tokens/most-held"
+FOMO_EVERY = 3600
+_FOMO_CACHE = {"at": 0, "rows": None, "error": ""}
 
 BROWSER = {
     "User-Agent": (
@@ -106,6 +112,43 @@ async def get_json_browser(url, headers):
 def bird_key():
     import os
     return os.getenv("BIRDEYE_API_KEY") or ct.CFG.get("birdeye_api_key") or ""
+
+
+def fomo_key():
+    return os.getenv("FOMO_API_KEY") or ""
+
+
+def _fomo_list(data):
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("tokens", "data", "items", "leaderboard", "results"):
+        rows = data.get(key)
+        if isinstance(rows, list):
+            return rows
+        if isinstance(rows, dict):
+            for inner in ("tokens", "items", "data"):
+                if isinstance(rows.get(inner), list):
+                    return rows[inner]
+    return []
+
+
+def _sol_mint(row):
+    if not isinstance(row, dict):
+        return ""
+    chain = str(row.get("chain") or row.get("chainId") or row.get("network") or "").lower()
+    # 1399811149 is the Solana chain id FOMO uses on its token board.
+    if chain and chain not in ("sol", "solana", "1399811149"):
+        return ""
+    for key in ("address", "mint", "contractAddress", "tokenAddress", "ca"):
+        val = row.get(key)
+        if isinstance(val, str) and not val.startswith("0x") and 32 <= len(val) <= 44:
+            return val
+    token = row.get("token") or row.get("baseToken") or {}
+    if isinstance(token, dict) and token is not row:
+        return _sol_mint({**token, "chain": chain or token.get("chain") or "solana"})
+    return ""
 
 
 async def sol_usd(session):
@@ -295,6 +338,51 @@ async def from_birdeye(session, book):
     return len(rows), ""
 
 
+async def from_fomo(session, book):
+    """Most-held Solana names from FOMO. Cached for an hour so a free key survives."""
+    key = fomo_key()
+    if not key:
+        return 0, "set FOMO_API_KEY to include FOMO"
+    now = time.time()
+    wait = 600 if _FOMO_CACHE["error"] else FOMO_EVERY
+    fresh = _FOMO_CACHE["rows"] is not None and now - _FOMO_CACHE["at"] < wait
+    if not fresh:
+        headers = {**BROWSER, "Authorization": f"Bearer {key}"}
+        try:
+            async with session.get(FOMO, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 401:
+                    _FOMO_CACHE.update(at=now, rows=[], error="FOMO key was rejected")
+                elif resp.status == 402:
+                    _FOMO_CACHE.update(at=now, rows=[], error="FOMO credits used up")
+                elif resp.status != 200:
+                    _FOMO_CACHE.update(at=now, rows=[], error=f"FOMO HTTP {resp.status}")
+                else:
+                    data = await resp.json(content_type=None)
+                    _FOMO_CACHE.update(at=now, rows=_fomo_list(data), error="")
+        except Exception as exc:
+            _FOMO_CACHE.update(at=now, rows=[], error=str(exc)[:120])
+    if _FOMO_CACHE["error"]:
+        return 0, _FOMO_CACHE["error"]
+    n = 0
+    for row in _FOMO_CACHE["rows"] or []:
+        mint = _sol_mint(row)
+        if not mint:
+            continue
+        c = touch(book, mint)
+        c["sources"].add("fomo")
+        token = row.get("token") if isinstance(row.get("token"), dict) else {}
+        c["symbol"] = c["symbol"] or row.get("symbol") or token.get("symbol") or ""
+        c["name"] = c["name"] or row.get("name") or token.get("name") or ""
+        if c["mcap"] is None:
+            c["mcap"] = num(row.get("marketCapUsd") or row.get("marketCap"))
+        if mint.endswith("pump"):
+            c["pump"] = True
+        n += 1
+    if n == 0:
+        return 0, "FOMO returned no Solana names"
+    return n, ""
+
+
 def decide(c):
     score = 0
     notes = []
@@ -309,6 +397,8 @@ def decide(c):
     if "gmgn" in src:
         score += 18
     if "birdeye" in src:
+        score += 12
+    if "fomo" in src:
         score += 12
     if len(src) >= 2:
         score += 15
@@ -447,6 +537,7 @@ async def scan_once(session):
     await run("dexscreener", lambda: from_dex(session, book))
     await run("gmgn", lambda: from_gmgn(session, book))
     await run("birdeye", lambda: from_birdeye(session, book))
+    await run("fomo", lambda: from_fomo(session, book))
 
     ranked = []
     for c in book.values():
@@ -498,6 +589,7 @@ async def scan_once(session):
 async def scan_loop(eng, session, status):
     while True:
         tune.review()
+        eye.choose_trade_usd()
         ranked, sources = await scan_once(session)
         skills.observe(ranked)
         shown = []
@@ -533,10 +625,14 @@ async def scan_loop(eng, session, status):
             if not price:
                 eng.log("SKIP", mint, "+".join(row["sources"]), note="no DexScreener SOL price")
                 continue
+            usd = eye.choose_trade_usd()
+            if usd < 4:
+                eng.log("SKIP", mint, "+".join(row["sources"]), note="fee reserve leaves less than $4")
+                continue
             opened = await eng.buy(session, mint, "+".join(row["sources"]), price, symbol=row.get("symbol") or "")
             if not opened:
                 continue
-            live.queue_phantom(mint, row.get("symbol") or "", ct.CFG.get("trade_usd") or 10)
+            live.queue_phantom(mint, row.get("symbol") or "", usd)
             entered += 1
         if entered:
             status["phase"] = f"paper entry · {status['phase']}"

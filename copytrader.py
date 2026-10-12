@@ -16,7 +16,7 @@ import aiohttp
 
 CFG = json.load(open("config.json"))
 CFG.setdefault("budget_usd", 50)
-CFG.setdefault("trade_usd", 10)
+CFG.setdefault("trade_usd", 5)
 CFG.setdefault("reserve_usd", 5)
 CFG.setdefault("one_trade_per_coin", True)
 KEY = os.getenv("HELIUS_API_KEY") or CFG["helius_api_key"]
@@ -375,11 +375,16 @@ class Paper:
     def _pos_size(self, p):
         return float(p.get("size_sol") or 0)
 
+    def fee_reserve_usd(self):
+        """SOL kept in the wallet for fees, the way a Phantom balance would. Always $3 to $5."""
+        raw = float(CFG.get("reserve_usd") or 5)
+        return min(5.0, max(3.0, raw))
+
     def free_sol(self, px):
         if not self.bank or not px:
             return 0.0
         deployed = sum(self._pos_size(p) * float(p.get("left") or 0) for p in self.pos.values())
-        reserve = float(CFG["reserve_usd"]) / px
+        reserve = self.fee_reserve_usd() / px
         return float(self.bank["start_sol"]) + float(self.bank.get("realized_sol") or 0) - deployed - reserve
 
     def budget_view(self):
@@ -392,7 +397,7 @@ class Paper:
         for p in self.pos.values():
             held = self._pos_size(p) * float(p.get("left") or 0)
             unreal += held * ((p.get("last_x") or 1) - 1)
-        reserve = float(CFG["reserve_usd"])
+        reserve = self.fee_reserve_usd()
         free = self.free_sol(px) if px and bank else None
 
         def usd(sol):
@@ -439,7 +444,8 @@ class Paper:
                               size_sol=float(size_sol))
         self.bought.add(mint)
         label = f"{symbol} " if symbol else ""
-        self.log("BUY", mint, wallet, fill, note=f"{label}size {size_sol:.4f} SOL")
+        usd = float(CFG.get("trade_usd") or 0)
+        self.log("BUY", mint, wallet, fill, note=f"{label}size {size_sol:.4f} SOL · ${usd:.2f} phantom paper")
         self.save()
 
     def sell(self, mint, price, frac, why):
