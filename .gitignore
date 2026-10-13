@@ -12,3 +12,4 @@ eye_knowledge.json
 live_state.json
 __pycache__
 .env
+paper-scanner-lab/data/

@@ -10,6 +10,9 @@ import json
 import os
 import secrets
 import time
+import urllib.request
+
+import aiohttp
 
 import copytrader as ct
 
@@ -55,6 +58,7 @@ def _load():
     data.setdefault("phantom", "")
     data.setdefault("wallet_trade", False)
     data.setdefault("orders", [])
+    data.setdefault("positions", [])
     return data
 
 
@@ -116,13 +120,108 @@ def note_stuck_sell():
     halt("stuck sell")
 
 
+def signature_verdict(status):
+    """What getSignatureStatuses said about one signature. Empty input is rejected by the caller."""
+    if not isinstance(status, dict):
+        return "missing"
+    if status.get("err"):
+        return "failed"
+    if status.get("confirmationStatus") in ("confirmed", "finalized"):
+        return "ok"
+    return "missing"
+
+
+def _mint_amount(balances, owner, mint):
+    total = 0
+    seen = False
+    for row in balances or []:
+        if not isinstance(row, dict) or row.get("mint") != mint or row.get("owner") != owner:
+            continue
+        seen = True
+        try:
+            total += int((row.get("uiTokenAmount") or {}).get("amount") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total, seen
+
+
+def signature_matches_order(order, tx, owner):
+    """The confirmed transaction has to move this order's mint for the linked wallet."""
+    if not isinstance(tx, dict) or not owner or not (order or {}).get("mint"):
+        return False
+    meta = tx.get("meta") or {}
+    if meta.get("err"):
+        return False
+    mint = order["mint"]
+    pre, pre_seen = _mint_amount(meta.get("preTokenBalances"), owner, mint)
+    post, post_seen = _mint_amount(meta.get("postTokenBalances"), owner, mint)
+    if not pre_seen and not post_seen:
+        return False
+    if (order.get("side") or "buy") == "sell":
+        return post < pre
+    return post > pre
+
+
+_LAB = {"at": 0.0, "ready": False, "why": "lab has not cleared live trading"}
+
+
+def _apply_lab_report(report):
+    gate = (report or {}).get("readiness") or {}
+    ready = bool(gate.get("ready"))
+    _LAB.update(
+        at=time.time(),
+        ready=ready,
+        why="lab cleared this strategy" if ready else "lab has not cleared live trading",
+    )
+
+
+def lab_status(force=False):
+    """Cached lab gate. A paper fill must not wait on the network; pass force from a click."""
+    if force:
+        url = os.getenv("LAB_URL", "").strip().rstrip("/")
+        key = os.getenv("LAB_KEY", "").strip()
+        report = None
+        if url and key:
+            try:
+                req = urllib.request.Request(
+                    url + "/api/report",
+                    headers={"X-Lab-Key": key, "Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    report = json.loads(resp.read().decode())
+            except Exception:
+                report = None
+        _apply_lab_report(report)
+    return _LAB["ready"], _LAB["why"]
+
+
+async def refresh_lab(session):
+    """Background refresh. Failure closes the gate."""
+    url = os.getenv("LAB_URL", "").strip().rstrip("/")
+    key = os.getenv("LAB_KEY", "").strip()
+    report = None
+    if url and key and session is not None:
+        try:
+            async with session.get(
+                url + "/api/report",
+                headers={"X-Lab-Key": key, "Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status == 200:
+                    report = await resp.json(content_type=None)
+        except Exception:
+            report = None
+    _apply_lab_report(report)
+
+
 def active(trade_sol):
     """True when a live buy of this SOL size is still inside every guard."""
     data = _today(_load())
     if data.get("halted") or data.get("stuck_sell"):
         return False, data.get("reason") or "halted"
-    if paper_profit_sol() <= 0:
-        return False, "paper book is not profitable"
+    ready, why = lab_status()
+    if not ready:
+        return False, why
     px = sol_price()
     if not px:
         return False, "no SOL price"
@@ -207,6 +306,9 @@ def set_phantom(address, trade, pin=""):
         ok, why = check_lock(pin)
         if not ok:
             return False, why
+        ready, why = lab_status(force=True)
+        if not ready:
+            return False, why
         data = _load()
         data["phantom"] = address
         if data.get("halted") and data.get("reason") not in ("", "paper mode", "spend lock"):
@@ -228,6 +330,9 @@ def queue_phantom(mint, symbol, usd):
     """Ask the open dashboard to have Phantom sign one buy. Nothing is broadcast here."""
     data = _today(_load())
     if not data.get("wallet_trade") or not data.get("phantom"):
+        return False
+    ready, _why = lab_status()
+    if not ready:
         return False
     if data.get("halted") or data.get("stuck_sell"):
         return False
@@ -251,6 +356,7 @@ def queue_phantom(mint, symbol, usd):
         "mint": mint,
         "symbol": str(symbol or "")[:24],
         "usd": round(usd, 2),
+        "side": "buy",
         "status": "pending",
         "time": time.strftime("%F %T"),
     })
@@ -258,6 +364,72 @@ def queue_phantom(mint, symbol, usd):
     data["exposure_usd"] = round(exposure + usd, 2)
     _save(data)
     return True
+
+
+def queue_sell(mint, symbol, frac, why):
+    """Ask Phantom to approve a sell at a ladder, stop, or rug exit. Nothing is broadcast here."""
+    try:
+        frac = float(frac)
+    except (TypeError, ValueError):
+        return False
+    if frac <= 0:
+        return False
+    data = _today(_load())
+    if not data.get("wallet_trade") or not data.get("phantom") or data.get("halted"):
+        return False
+    ready, _why = lab_status()
+    if not ready:
+        return False
+    pos = next((p for p in data.get("positions") or [] if p.get("mint") == mint and float(p.get("left") or 0) > 0.01), None)
+    if not pos:
+        return False
+    frac = min(frac, float(pos.get("left") or 0))
+    orders = data.setdefault("orders", [])
+    for order in orders:
+        if order.get("mint") == mint and order.get("side") == "sell" and order.get("status") == "pending":
+            order["frac"] = round(min(float(pos.get("left") or 0), float(order.get("frac") or 0) + frac), 4)
+            order["why"] = str(why or "")[:80]
+            _save(data)
+            return True
+    orders.insert(0, {
+        "id": str(int(time.time() * 1000)),
+        "mint": mint,
+        "symbol": str(symbol or pos.get("symbol") or "")[:24],
+        "usd": round(float(pos.get("usd") or 0) * frac, 2),
+        "side": "sell",
+        "frac": round(frac, 4),
+        "why": str(why or "")[:80],
+        "status": "pending",
+        "time": time.strftime("%F %T"),
+    })
+    data["orders"] = orders[:20]
+    _save(data)
+    return True
+
+
+def _book_fill(data, order):
+    side = order.get("side") or "buy"
+    if side != "sell":
+        data.setdefault("positions", []).append({
+            "mint": order.get("mint"),
+            "symbol": order.get("symbol") or "",
+            "usd": float(order.get("usd") or 0),
+            "left": 1.0,
+        })
+        return
+    frac = float(order.get("frac") or 0)
+    kept = []
+    for pos in data.get("positions") or []:
+        if pos.get("mint") != order.get("mint"):
+            kept.append(pos)
+            continue
+        pos["left"] = max(0.0, float(pos.get("left") or 0) - frac)
+        data["exposure_usd"] = round(
+            max(0.0, float(data.get("exposure_usd") or 0) - float(pos.get("usd") or 0) * frac), 2
+        )
+        if pos["left"] > 0.01:
+            kept.append(pos)
+    data["positions"] = kept
 
 
 def finish_order(order_id, signature="", error=""):
@@ -268,13 +440,19 @@ def finish_order(order_id, signature="", error=""):
         if error:
             order["status"] = "failed"
             order["error"] = str(error)[:160]
-            data["exposure_usd"] = round(max(0.0, float(data.get("exposure_usd") or 0) - float(order.get("usd") or 0)), 2)
+            if (order.get("side") or "buy") != "sell":
+                data["exposure_usd"] = round(max(0.0, float(data.get("exposure_usd") or 0) - float(order.get("usd") or 0)), 2)
         else:
+            signature = str(signature or "").strip()
+            if not signature:
+                return False
             order["status"] = "sent"
-            order["signature"] = str(signature)[:120]
+            order["signature"] = signature[:120]
+            _book_fill(data, order)
         break
     data["orders"] = (data.get("orders") or [])[:20]
     _save(data)
+    return True
 
 
 def pending_order():
@@ -287,6 +465,7 @@ def pending_order():
 
 def public():
     data = _today(_load())
+    ready, why = lab_status()
     return {
         "halted": bool(data.get("halted") or data.get("stuck_sell")),
         "reason": data.get("reason") or "",
@@ -297,7 +476,13 @@ def public():
         "exposure_usd": round(float(data.get("exposure_usd") or 0), 2),
         "reserve_usd": float(ct.CFG.get("reserve_usd") or 0),
         "phantom": data.get("phantom") or "",
-        "wallet_trade": bool(data.get("wallet_trade")) and not data.get("halted"),
+        "wallet_trade": bool(data.get("wallet_trade")) and not data.get("halted") and ready,
+        "lab_ready": ready,
+        "lab_reason": why,
         "locked": bool(data.get("lock_hash")),
         "orders": (data.get("orders") or [])[:8],
+        "positions": [
+            {"mint": p.get("mint"), "symbol": p.get("symbol") or "", "left": p.get("left")}
+            for p in (data.get("positions") or [])[:8]
+        ],
     }

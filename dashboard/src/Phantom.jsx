@@ -86,7 +86,7 @@ export default function PhantomLink({ token }) {
     const next = await call("/api/phantom", { address: info.phantom, trade, pin: trade ? pin : "" });
     if (next && !next.error) {
       setInfo(next);
-      setNote(trade ? "Wallet trading is on. You still approve each buy." : "Wallet trading is off.");
+      setNote(trade ? "Wallet trading is on. You still approve each buy and each sell." : "Wallet trading is off.");
     }
     setBusy(false);
   }
@@ -166,9 +166,12 @@ export default function PhantomLink({ token }) {
       )}
       {pending && (
         <button disabled={busy || pin.trim().length < 4} onClick={() => approve(pending)} className="rounded-full bg-amber-400 px-3 py-1 font-medium text-slate-950 disabled:opacity-40">
-          Approve {pending.symbol || "buy"} ${pending.usd}
+          {pending.side === "sell"
+            ? `Approve sell ${pending.symbol || "token"}${pending.why ? ` · ${pending.why}` : ""}`
+            : `Approve ${pending.symbol || "buy"} $${pending.usd}`}
         </button>
       )}
+      {!trading && info?.lab_reason && <span className="max-w-xs text-slate-500">{info.lab_reason}</span>}
       {note && <span className="max-w-xs text-slate-500">{note}</span>}
     </div>
   );

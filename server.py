@@ -74,6 +74,7 @@ async def supervisor(app):
     asyncio.create_task(guard("scan", lambda: scanner.scan_loop(ENG, session, STATUS)))
     asyncio.create_task(guard("reports", _reports))
     asyncio.create_task(guard("eye", lambda: _eye(session)))
+    asyncio.create_task(guard("lab-gate", lambda: _lab_gate(session)))
     # Wallet copy stays available, but entries come from the scanner.
     if os.path.exists(ct.WALLETS):
         wallets = [m["wallet"] for m in json.load(open(ct.WALLETS)) if m.get("wallet")]
@@ -103,6 +104,15 @@ async def _eye(session):
         except Exception as e:
             print("eye failed:", type(e).__name__, e)
         await asyncio.sleep(wait)
+
+
+async def _lab_gate(session):
+    while True:
+        try:
+            await live.refresh_lab(session)
+        except Exception as e:
+            print("lab gate failed:", type(e).__name__)
+        await asyncio.sleep(600)
 
 
 async def _reports():
@@ -455,6 +465,34 @@ async def api_wallets(request):
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
+async def helius_rpc(session, method, params):
+    url = f"https://mainnet.helius-rpc.com/?api-key={ct.KEY}"
+    async with session.post(
+        url,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout=aiohttp.ClientTimeout(total=20),
+    ) as resp:
+        data = await resp.json(content_type=None)
+    if not isinstance(data, dict):
+        return None
+    return data.get("result")
+
+
+async def token_raw_amount(session, owner, mint):
+    result = await helius_rpc(
+        session,
+        "getTokenAccountsByOwner",
+        [owner, {"mint": mint}, {"encoding": "jsonParsed"}],
+    )
+    total = 0
+    for acct in (result or {}).get("value") or []:
+        try:
+            total += int(acct["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return total
+
+
 async def api_phantom_get(request):
     return web.json_response(live.public())
 
@@ -496,20 +534,31 @@ async def api_phantom_swap(request):
         return web.json_response({"error": why, **live.public()}, status=401)
     order = live.pending_order()
     if not order or str(order.get("id")) != str((body or {}).get("id") or ""):
-        return web.json_response({"error": "no pending buy"}, status=404)
+        return web.json_response({"error": "no pending order"}, status=404)
     state = live.public()
     if not state.get("wallet_trade") or not state.get("phantom"):
-        return web.json_response({"error": "wallet trading is off"}, status=400)
-    px = live.sol_price() or scanner.STATE.get("sol_usd")
-    if not px:
-        return web.json_response({"error": "no SOL price"}, status=400)
-    lamports = int(float(order["usd"]) / float(px) * 1_000_000_000)
-    if lamports < 1_000_000:
-        live.finish_order(order["id"], error="buy is under 0.001 SOL")
-        return web.json_response({"error": "buy is under 0.001 SOL"}, status=400)
+        return web.json_response({"error": state.get("lab_reason") or "wallet trading is off"}, status=400)
+    side = order.get("side") or "buy"
+    if side == "sell":
+        async with aiohttp.ClientSession() as session:
+            raw = await token_raw_amount(session, state["phantom"], order["mint"])
+        amount = int(raw * float(order.get("frac") or 0))
+        if amount < 1:
+            live.finish_order(order["id"], error="wallet holds none of this token")
+            return web.json_response({"error": "wallet holds none of this token"}, status=400)
+        input_mint, output_mint, lamports = order["mint"], SOL_MINT, amount
+    else:
+        px = live.sol_price() or scanner.STATE.get("sol_usd")
+        if not px:
+            return web.json_response({"error": "no SOL price"}, status=400)
+        lamports = int(float(order["usd"]) / float(px) * 1_000_000_000)
+        if lamports < 1_000_000:
+            live.finish_order(order["id"], error="buy is under 0.001 SOL")
+            return web.json_response({"error": "buy is under 0.001 SOL"}, status=400)
+        input_mint, output_mint = SOL_MINT, order["mint"]
     quote_url = (
         "https://api.jup.ag/swap/v1/quote"
-        f"?inputMint={SOL_MINT}&outputMint={order['mint']}"
+        f"?inputMint={input_mint}&outputMint={output_mint}"
         f"&amount={lamports}&slippageBps=300"
     )
     try:
@@ -542,11 +591,45 @@ async def api_phantom_done(request):
         body = await request.json()
     except Exception:
         body = {}
-    live.finish_order(
-        (body or {}).get("id"),
-        signature=(body or {}).get("signature") or "",
-        error=(body or {}).get("error") or "",
-    )
+    body = body or {}
+    if body.get("error"):
+        live.finish_order(body.get("id"), error=body.get("error") or "")
+        return web.json_response(live.public())
+    signature = str(body.get("signature") or "").strip()
+    if not signature:
+        return web.json_response({"error": "empty signature", **live.public()}, status=400)
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = await helius_rpc(
+                session,
+                "getSignatureStatuses",
+                [[signature], {"searchTransactionHistory": True}],
+            )
+        status = ((result or {}).get("value") or [None])[0]
+    except Exception:
+        status = None
+    verdict = live.signature_verdict(status)
+    if verdict == "failed":
+        live.finish_order(body.get("id"), error="transaction failed on-chain")
+        return web.json_response({"error": "transaction failed on-chain", **live.public()}, status=400)
+    if verdict != "ok":
+        return web.json_response({"error": "signature is not on-chain yet", **live.public()}, status=409)
+    order = next((item for item in (live.public().get("orders") or []) if str(item.get("id")) == str(body.get("id"))), None)
+    owner = (live.public().get("phantom") or "")
+    try:
+        async with aiohttp.ClientSession() as session:
+            tx = await helius_rpc(
+                session,
+                "getTransaction",
+                [signature, {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}],
+            )
+    except Exception:
+        tx = None
+    if not isinstance(tx, dict):
+        return web.json_response({"error": "signature is not on-chain yet", **live.public()}, status=409)
+    if not live.signature_matches_order(order, tx, owner):
+        return web.json_response({"error": "signature does not match this order", **live.public()}, status=400)
+    live.finish_order(body.get("id"), signature=signature)
     return web.json_response(live.public())
 
 

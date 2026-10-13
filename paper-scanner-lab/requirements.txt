@@ -1,0 +1,2 @@
+# The lab uses the Python standard library only.
+# This file is here so `pip install -r requirements.txt` has something to read.

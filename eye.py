@@ -5,7 +5,9 @@ It may halt live trading. It may not resume it, and it may not touch the budget.
 import csv
 import json
 import os
+import random
 import re
+import statistics
 import time
 
 import aiohttp
@@ -269,7 +271,8 @@ async def review(session=None, complete=None):
         print("eye review failed:", type(e).__name__, str(e)[:120])
         return _load()
     blob = "\n".join(n.get("text") or "" for n in knowledge)
-    for key, value in (parsed.get("settings") or {}).items():
+    settings = {} if len(_closed_rows()) < 30 else (parsed.get("settings") or {})
+    for key, value in settings.items():
         if key in LOCKED or key not in tune.BOUNDS:
             continue
         if _injected(blob, key, value):
@@ -301,11 +304,34 @@ async def review(session=None, complete=None):
     return _load()
 
 
+def trade_usd_for(n, win_rate, free, equity):
+    """Fixed $5.50 until 30 closes. After that, size from the recent win rate."""
+    if free < 4:
+        return 0.0
+    if n < 30:
+        if free >= 5.5:
+            size = 5.5
+        elif free >= 5:
+            size = 5.0
+        else:
+            return 0.0
+    elif win_rate < 0.25:
+        size = 4.0
+    elif win_rate < 0.45:
+        size = min(8.0, max(4.0, round(equity * 0.10, 2)))
+    else:
+        size = min(12.0, max(6.0, round(equity * 0.15, 2)))
+    size = min(size, round(free, 2))
+    if size < 4:
+        return 0.0
+    return round(size, 2)
+
+
 def choose_trade_usd():
     """How much of the Phantom-style paper wallet Eye will swap next.
 
-    The wallet always keeps $3 to $5 for fees. Eye sizes the rest from the
-    fresh book, then from whether recent closes are paying.
+    The wallet always keeps $3 to $5 for fees. The first 30 closes use a
+    fixed $5 to $6. After that, Eye sizes from whether recent closes are paying.
     """
     px = None
     try:
@@ -333,21 +359,7 @@ def choose_trade_usd():
     recent = closed[-15:]
     wins = sum(1 for row in recent if _num(row, "sol_pnl") > 0)
     wr = (wins / len(recent)) if recent else 0
-    if free < 4:
-        size = 0
-    elif n < 5:
-        size = min(8.0, max(4.0, round(equity * 0.10, 2)))
-    elif wr < 0.25:
-        size = 4.0
-    elif wr < 0.45:
-        size = min(8.0, max(4.0, round(equity * 0.10, 2)))
-    else:
-        size = min(12.0, max(6.0, round(equity * 0.15, 2)))
-    if size:
-        size = min(size, round(free, 2))
-    if size < 4:
-        size = 0
-    ct.CFG["trade_usd"] = round(size, 2)
+    ct.CFG["trade_usd"] = trade_usd_for(n, wr, free, equity)
     return ct.CFG["trade_usd"]
 
 
@@ -570,12 +582,98 @@ def _run_closes():
     return [row for row in current_rows(rows) if row.get("event") == "CLOSED"]
 
 
-def _profitable(closed):
-    if len(closed) < 15:
+def bootstrap_ci(xs, iters=1000, seed=3):
+    """95% interval for the mean. Same draw as the lab's summarize()."""
+    rnd = random.Random(seed)
+    n = len(xs)
+    means = sorted(statistics.fmean(rnd.choices(xs, k=n)) for _ in range(iters))
+    return means[int(0.025 * iters)], means[int(0.975 * iters)]
+
+
+def summarize(trades):
+    """Copied from the lab. `ret` is profit divided by the SOL put into the trade."""
+    rets = [t["ret"] for t in trades]
+    n = len(rets)
+    if n == 0:
+        return {"n": 0, "verdict": "no trades"}
+    wins = sum(r for r in rets if r > 0)
+    losses = -sum(r for r in rets if r <= 0)
+    cum = peak = dd = 0.0
+    for t in sorted(trades, key=lambda t: t["exit_ts"]):
+        cum += t["pnl_usd"]
+        peak = max(peak, cum)
+        dd = max(dd, peak - cum)
+    lo, hi = bootstrap_ci(rets) if n >= 5 else (None, None)
+    if n < 30:
+        verdict = "too few trades to judge"
+    elif lo > 0:
+        verdict = "positive after costs (95% CI above 0)"
+    elif hi < 0:
+        verdict = "negative after costs (95% CI below 0)"
+    else:
+        verdict = "not distinguishable from zero"
+    if n < 100 and n >= 30:
+        verdict += " - still early (<100)"
+    return {
+        "n": n,
+        "win_rate": sum(r > 0 for r in rets) / n,
+        "mean": statistics.fmean(rets),
+        "median": statistics.median(rets),
+        "profit_factor": (wins / losses) if losses > 0 else None,
+        "max_dd_usd": dd,
+        "total_usd": cum,
+        "ci": (lo, hi),
+        "verdict": verdict,
+    }
+
+
+def _buy_size(rows, mint, close_time):
+    size = 0.0
+    for row in rows:
+        if row.get("mint") != mint or row.get("event") != "BUY":
+            continue
+        if close_time and (row.get("time") or "") > close_time:
+            continue
+        match = re.search(r"size ([0-9.]+) SOL", row.get("note") or "")
+        if match:
+            try:
+                size = float(match.group(1))
+            except ValueError:
+                continue
+    return size
+
+
+def _close_time(row):
+    try:
+        return time.mktime(time.strptime(row.get("time") or "", "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _close_trades(closed):
+    rows = []
+    if os.path.exists(ct.TRADES):
+        with open(ct.TRADES, newline="", encoding="utf-8", errors="replace") as handle:
+            rows = list(csv.DictReader(handle))
+    out = []
+    for row in closed:
+        size = _buy_size(rows, row.get("mint"), row.get("time"))
+        pnl = _num(row, "sol_pnl")
+        if size <= 0:
+            continue
+        out.append({"ret": pnl / size, "pnl_usd": pnl, "exit_ts": _close_time(row)})
+    return out
+
+
+def lock_ready(stats):
+    if stats.get("n", 0) < 50:
         return False
-    pnl = sum(_num(row, "sol_pnl") for row in closed)
-    wins = sum(1 for row in closed if _num(row, "sol_pnl") > 0)
-    return pnl > 0 and wins / len(closed) >= 0.30
+    lo, _hi = stats.get("ci") or (None, None)
+    return (stats.get("mean") or 0) > 0 and lo is not None and lo > 0
+
+
+def _profitable(closed):
+    return lock_ready(summarize(_close_trades(closed)))
 
 
 def strategy_line():
@@ -583,7 +681,10 @@ def strategy_line():
         return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
     data = tune._load()
     number = int(data.get("grind") or 0) % len(PRESETS) + 1
-    return f"Grinding strategy {number} of {len(PRESETS)}. Eye refills the wallet to $50 when nothing is left above the fee reserve."
+    return (
+        f"Keeping strategy {number} of {len(PRESETS)}. "
+        "A bust does not rotate presets. The Lab's shadow books have to name a winner first."
+    )
 
 
 def _maybe_lock():
@@ -591,8 +692,10 @@ def _maybe_lock():
         return "Sticking with this strategy. The current run is paying."
     if not _profitable(_run_closes()):
         return ""
-    tune.lock_strategy("Fifteen or more closes are net positive and at least 30% won. Stick with these rules.")
-    return "This run is paying. Eye will stick with these rules."
+    tune.lock_strategy(
+        "Fifty or more closes are positive after costs, and the 95% interval is above zero. Stick with these rules."
+    )
+    return "This run is paying after costs. Eye will stick with these rules."
 
 
 def tend_wallet(eng):
@@ -609,18 +712,14 @@ def tend_wallet(eng):
         return ""
     if equity - eng.fee_reserve_usd() >= 4:
         return ""
-    if tune.locked() or _profitable(_run_closes()):
+    if _profitable(_run_closes()):
         if not tune.locked():
-            tune.lock_strategy("The run paid, so Eye kept the rules when the wallet was refilled.")
+            tune.lock_strategy(
+                "Fifty or more closes are positive after costs, and the 95% interval is above zero. Stick with these rules."
+            )
         did = "Strategy stays. Refilled the paper wallet to $50."
     else:
-        data = tune._load()
-        nxt = int(data.get("grind") or 0) + 1
-        data["grind"] = nxt
-        tune._save(data)
-        preset = PRESETS[nxt % len(PRESETS)]
-        tune.install_preset(preset, f"Grind {nxt}: the wallet had nothing left above the fee reserve.")
-        did = f"Wallet was empty. Refilled to $50 and moved to strategy {nxt % len(PRESETS) + 1} of {len(PRESETS)}."
+        did = "Wallet was empty. Refilled to $50. The strategy stays until the Lab names a winner."
     if not eng.refill(px):
         return ""
     add_note("trades", did, "grind")
@@ -634,6 +733,16 @@ def _grow_once(ids, recent, market):
     if held:
         return held
     n = len(recent)
+    if len(_closed_rows()) < 30:
+        chase = market["chasing"] / market["names"] if market["names"] else 0
+        if chase >= 0.4 and _current("max_change_5m", 90) > 40:
+            nxt = _current("max_change_5m", 90) - 5
+            if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
+                return f"Tightened the 5-minute chase cap to {int(nxt)}%."
+        wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n) if n else 0
+        if n:
+            return f"Kept the rules. The last {n} closes won {wr:.0%}. A rule change waits for 30 closes."
+        return "Kept the rules. Not enough closes to move one."
     wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
     wr = (wins / n) if n else 0
     chase = market["chasing"] / market["names"] if market["names"] else 0
@@ -657,7 +766,7 @@ def _grow_once(ids, recent, market):
         nxt = _current("entry_score", 60) + 5
         if _apply("entry_score", nxt, f"Eye: the last {n} closes won {wr:.0%}. Ask for a higher score."):
             return f"Raised the entry score to {int(nxt)}."
-    if n >= 8 and wr >= 0.45 and chase < 0.25 and _current("entry_score", 60) > floor:
+    if n >= 8 and wr >= 0.45 and chase < 0.25 and not tool_rules()["hostile"] and _current("entry_score", 60) > floor:
         nxt = _current("entry_score", 60) - 5
         if _apply("entry_score", max(floor, nxt), f"Eye: the last {n} closes won {wr:.0%}. Allow a slightly lower score."):
             return f"Lowered the entry score toward {int(max(floor, nxt))}."

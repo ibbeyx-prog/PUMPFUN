@@ -164,7 +164,7 @@ def review():
         return _load()
     rows = _closed_rows()
     data = _load()
-    if len(rows) < 5 or len(rows) == data.get("reviewed_closes"):
+    if len(rows) < 30 or len(rows) == data.get("reviewed_closes"):
         return data
     buckets, _stops = _bucket(rows)
     n = len(rows)
@@ -194,7 +194,9 @@ def review():
                         f"Only {wr:.0%} of {n} closes won. Demand a higher entry score.")
 
     three = buckets.get(3) or []
-    if (wr is not None and wr >= 0.55 and len(three) >= 3 and _wr(three) >= 0.5
+    import eye
+    hostile = eye.tool_rules().get("hostile")
+    if (not hostile and wr is not None and wr >= 0.55 and len(three) >= 3 and _wr(three) >= 0.5
             and data["values"].get("min_sources", 1) > 2):
         changed |= _set(data, "min_sources", 2,
                         "Recent closes are paying again. Allow a 2-source entry.")
