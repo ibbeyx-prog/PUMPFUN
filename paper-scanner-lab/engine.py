@@ -331,6 +331,71 @@ def forced_pnl(book, snap, path, size_usd=SIZE_USD):
     return simulate(book, snap, path, size_usd)["pnl"]
 
 
+TICKETS = (5.5, 8.0, 12.0)
+
+
+def _score_taken(book, ready, size_usd, taken_only):
+    taken = []
+    pool = []
+    for ep in ready:
+        pool.append(forced_pnl(book, ep, ep["path"], size_usd))
+        if not taken_only or would_enter(book, ep):
+            trade = simulate(book, ep, ep["path"], size_usd)
+            taken.append(trade["pnl"])
+    return taken, pool
+
+
+def _row(book_id, name, taken, pool, size_usd):
+    seed = sum(ord(ch) for ch in book_id)
+    ci = bootstrap_ci(taken, seed=seed) if taken else None
+    total = sum(taken) if taken else 0
+    return {
+        "id": book_id,
+        "name": name,
+        "size_usd": size_usd,
+        "n": len(taken),
+        "total": total if taken else None,
+        "mean": (total / len(taken)) if taken else None,
+        "win_rate": (sum(1 for p in taken if p > 0) / len(taken)) if taken else None,
+        "ci": ci,
+        "verdict": verdict(len(taken), ci) if ci else "too few trades to tell",
+        "random_percentile": random_percentile(total, pool, len(taken), seed=seed) if taken else None,
+    }
+
+
+def ticket_books(episodes):
+    """The desk ladder at three ticket sizes. Same signals, different fixed costs."""
+    desk = next(book for book in BOOKS if book.id == "desk-ladder")
+    ready = [ep for ep in episodes if ep.get("path")]
+    out = []
+    for size in TICKETS:
+        taken, pool = _score_taken(desk, ready, size, True)
+        out.append(_row(f"desk-ladder-{size:g}", f"Desk / ladder ${size:g}", taken, pool, size))
+    return out
+
+
+def baselines(episodes, size_usd=5.5):
+    """Hold SOL does not trade. Buy-every-name uses the ladder exits on every tracked coin."""
+    desk = next(book for book in BOOKS if book.id == "desk-ladder")
+    ready = [ep for ep in episodes if ep.get("path")]
+    hold = {
+        "id": "hold-sol",
+        "name": "Hold SOL",
+        "size_usd": 0,
+        "n": len(ready),
+        "total": 0,
+        "mean": 0,
+        "win_rate": None,
+        "ci": None,
+        "verdict": "baseline",
+        "random_percentile": None,
+    }
+    taken, pool = _score_taken(desk, ready, size_usd, False)
+    every = _row("buy-every-name", "Buy every tracked name", taken, pool, size_usd)
+    every["verdict"] = "baseline"
+    return [hold, every]
+
+
 def run_books(episodes, size_usd=SIZE_USD):
     """Nine shadow books on the same recorded signals."""
     ready = [ep for ep in episodes if ep.get("path")]

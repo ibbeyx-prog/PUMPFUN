@@ -26,6 +26,7 @@ const solToUsd = (solAmount, px) => {
   return n * price;
 };
 const tone = (n) => (n > 0 ? "text-emerald-300" : n < 0 ? "text-rose-300" : "text-slate-400");
+const when = (s) => (s ? String(s).replace("T", " ").replace("Z", "").slice(5, 16) : "");
 const bubbleMapUrl = (c) => {
   const raw = c.bubble_url || `https://v2.bubblemaps.io/map?address=${c.mint}&chain=solana`;
   try {
@@ -319,7 +320,8 @@ export default function App() {
             </div>
             <div className="mt-1 text-sm text-slate-400">current equity</div>
             <div className="mt-2 text-xs text-slate-500">
-              realized {dollars(sum.budget?.realized_usd, true)} · {sum.closed} closed trades
+              realized {dollars(sum.budget?.realized_usd, true)}
+              {sum.budget?.realized_sol != null ? ` · ${Number(sum.budget.realized_sol).toFixed(3)} SOL` : ""} · {sum.closed} closed trades
             </div>
             <div className="mt-4">
               <Spark data={sum.cum_pnl} />
@@ -330,7 +332,7 @@ export default function App() {
               ["Win rate", pct(sum.win_rate), `best ${pnlUsd(sum.best) || "–"} · worst ${pnlUsd(sum.worst) || "–"}`],
               ["Open", `${sum.open.length}/${cfg.max_open_positions}`, `$${sum.budget?.trade_usd ?? cfg.trade_usd} per trade · one per coin`],
               ["Skipped", sum.skipped, `chase cap ${pct(cfg.max_chase_pct)}`],
-              ["Closed PnL", pnlUsd(sum.total_pnl) || "–", `${sum.closed} closed trades`],
+              ["Closed PnL", pnlUsd(sum.total_pnl) || "–", `${sum.total_pnl == null ? "–" : Number(sum.total_pnl).toFixed(3)} SOL · ${sum.closed} closed`],
             ].map(([label, value, sub]) => (
               <div key={label} className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-4">
                 <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</div>
@@ -360,6 +362,18 @@ export default function App() {
           <span className="font-medium text-amber-200">paper only</span>
           <span className="text-amber-100/80">{sum.live?.wallet_trade ? "Wallet trading is on. Each buy still needs the lock code and a Phantom approval." : `Paper buys are sized like a Phantom swap. Eye picks the amount, and $${sum.budget?.reserve_usd ?? cfg.reserve_usd} stays in the wallet for fees.`}</span>
         </div>
+
+        {(() => {
+          const age = sum.scan?.at ? Date.now() / 1000 - sum.scan.at : null;
+          const down = (sum.desk?.feeds || []).filter((feed) => feed.state === "down").map((feed) => feed.name);
+          if ((age == null || age <= 300) && down.length === 0) return null;
+          return (
+            <div className="rounded-2xl border border-rose-300/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
+              {age != null && age > 300 ? `Scan has not finished for ${Math.round(age / 60)} minutes. ` : ""}
+              {down.length ? `Feeds down: ${down.join(", ")}.` : ""}
+            </div>
+          );
+        })()}
 
         <nav className="flex gap-1 rounded-2xl border border-white/[0.07] bg-[#141820]/70 p-1">
           {TABS.map(([id, label]) => (
@@ -432,10 +446,10 @@ export default function App() {
             <Shell title="Open positions">
               <table className="w-full text-sm">
                 <thead>
-                  <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Age", "Suggestion", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                  <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Cost", "Age", "Suggestion", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody>
-                  {sum.open.length === 0 && <Empty cols={8}>No open positions.</Empty>}
+                  {sum.open.length === 0 && <Empty cols={9}>No open positions.</Empty>}
                   {sum.open.map((p) => (
                     <tr key={p.mint} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5"><a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={`https://dexscreener.com/solana/${p.mint}`}>{p.symbol || short(p.mint)}</a></td>
@@ -443,6 +457,7 @@ export default function App() {
                       <td className={`num px-4 py-2.5 font-medium ${p.x >= 1 ? "text-emerald-300" : "text-rose-300"}`}>{p.x ? `${p.x.toFixed(2)}X` : "–"}</td>
                       <td className="num px-4 py-2.5">{pct(p.left)}</td>
                       <td className={`num px-4 py-2.5 ${tone(p.pnl)}`}>{pnlUsd(p.pnl) || "–"}</td>
+                      <td className="num px-4 py-2.5 text-slate-400">{p.cost_usd != null ? `$${Number(p.cost_usd).toFixed(2)}` : "–"}</td>
                       <td className="num px-4 py-2.5 text-slate-400">{p.age_min.toFixed(0)}m</td>
                       <td className="min-w-52 px-4 py-2.5"><Suggestion advice={p.advice} /></td>
                       <td className="min-w-52 px-4 py-2.5"><Suggestion advice={p.eye} /></td>
@@ -462,7 +477,7 @@ export default function App() {
                     {trades.length === 0 && <Empty cols={7}>No activity yet.</Empty>}
                     {trades.slice(0, 40).map((t, i) => (
                       <tr key={i} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
-                        <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{t.time.slice(5, 16)}</td>
+                        <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{when(t.time)}</td>
                         <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
                         <td className="px-2 py-2 text-slate-300">{short(t.mint)}</td>
                         <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
@@ -513,7 +528,7 @@ export default function App() {
                 )}
                 {(sum.reports?.reports || []).map((r) => (
                   <tr key={r.start} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
-                    <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-400">{r.start.slice(5)} → {r.end.slice(5)}</td>
+                    <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-400">{when(r.start)} → {when(r.end)}</td>
                     <td className="num px-4 py-2.5">{r.closed}</td>
                     <td className="num px-4 py-2.5">{pct(r.win_rate)}</td>
                     <td className={`num px-4 py-2.5 ${tone(r.pnl)}`}>{pnlUsd(r.pnl) || "–"}</td>
@@ -562,7 +577,7 @@ export default function App() {
                   <div key={i} className="px-4 py-3 text-sm">
                     <div className="text-slate-200">{g.did}</div>
                     <div className="mt-1 text-xs text-slate-500">
-                      {(g.time || "").slice(5, 16)}
+                      {when(g.time)}
                       {g.win_rate != null ? ` · last closes ${Math.round(g.win_rate * 100)}% won` : ""}
                       {g.equity_usd != null ? ` · equity $${g.equity_usd}` : ""}
                     </div>
@@ -611,7 +626,7 @@ export default function App() {
                   {(sum.agent?.changes || []).length === 0 && <Empty cols={5}>No edits yet. Eye waits for 30 closed trades before it changes a rule.</Empty>}
                   {(sum.agent?.changes || []).map((c, i) => (
                     <tr key={i} className="border-t border-white/[0.05]">
-                      <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">{(c.time || "").slice(5, 16)}</td>
+                      <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">{when(c.time)}</td>
                       <td className="px-4 py-2.5 text-slate-200">{c.what}</td>
                       <td className="px-4 py-2.5 text-slate-400">{c.from || "–"}</td>
                       <td className="px-4 py-2.5 text-emerald-300">{c.to}</td>

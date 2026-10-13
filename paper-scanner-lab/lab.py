@@ -453,6 +453,8 @@ def build_report(store):
         "sample": engine.sample_label(counts["episodes"]),
         "outcomes": engine.outcome_tables(done),
         "books": books,
+        "tickets": engine.ticket_books(done),
+        "baselines": engine.baselines(done),
         "readiness": readiness(store, books),
         "desk_losses": losses,
         "hypotheses": hypotheses(books, losses, counts),
@@ -544,6 +546,17 @@ def format_report(report):
             f"{book['verdict']}"
             + (f"  random percentile {pct:.0f}" if pct is not None else "")
         )
+    lines.append("")
+    lines.append("Ticket size, desk ladder")
+    for book in report.get("tickets") or []:
+        lines.append(
+            f"{book['name']}: n={book['n']} total={_money(book['total'])} "
+            f"mean={_money(book['mean'])} win={_pct(book['win_rate'])} {book['verdict']}"
+        )
+    lines.append("")
+    lines.append("Baselines")
+    for book in report.get("baselines") or []:
+        lines.append(f"{book['name']}: n={book['n']} total={_money(book['total'])} mean={_money(book['mean'])}")
     gate = report.get("readiness") or {}
     lines.append("")
     lines.append(

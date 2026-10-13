@@ -15,6 +15,7 @@ import urllib.request
 import aiohttp
 
 import copytrader as ct
+import deskio
 
 HALT_PATH = os.path.join(ct.DATA, "live_state.json")
 LOCKED = ("budget_usd", "trade_usd", "reserve_usd", "one_trade_per_coin")
@@ -63,9 +64,7 @@ def _load():
 
 
 def _save(data):
-    os.makedirs(ct.DATA, exist_ok=True)
-    with open(HALT_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    deskio.write_json(HALT_PATH, data)
 
 
 def sol_price():
@@ -73,7 +72,7 @@ def sol_price():
 
 
 def _today(data):
-    day = time.strftime("%F")
+    day = deskio.stamp()[:10]
     if data.get("day") != day:
         data["day"] = day
         data["daily_loss_usd"] = 0.0
@@ -358,7 +357,7 @@ def queue_phantom(mint, symbol, usd):
         "usd": round(usd, 2),
         "side": "buy",
         "status": "pending",
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
     })
     data["orders"] = orders[:20]
     data["exposure_usd"] = round(exposure + usd, 2)
@@ -400,7 +399,7 @@ def queue_sell(mint, symbol, frac, why):
         "frac": round(frac, 4),
         "why": str(why or "")[:80],
         "status": "pending",
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
     })
     data["orders"] = orders[:20]
     _save(data)

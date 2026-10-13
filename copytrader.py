@@ -14,6 +14,8 @@ from collections import Counter, defaultdict
 
 import aiohttp
 
+import deskio
+
 CFG = json.load(open("config.json"))
 CFG.setdefault("budget_usd", 50)
 CFG.setdefault("trade_usd", 5)
@@ -120,6 +122,13 @@ def slip_pct(trade_usd, liq_usd):
     if liq <= 0:
         return 0.03
     return min(0.80, 0.03 + 2.0 * float(trade_usd or 0) / liq)
+
+
+def round_trip_cost_usd(trade_usd, liq_usd=0):
+    """Both sides: 1% plus $0.20, and slippage from slip_pct."""
+    usd = float(trade_usd or 0)
+    slip = slip_pct(usd, liq_usd)
+    return round(2 * (FEE_PCT * usd + FLAT_USD) + 2 * slip * usd, 2)
 
 
 def flat_sol(px):
@@ -350,7 +359,7 @@ async def cmd_score():
         res = await asyncio.gather(*(score_wallet(s, w) for w in cands))
     good = sorted((m for m in res if m and passes(m)), key=lambda m: -m["score"])
     good = good[: CFG["top_wallets"]]
-    json.dump(good, open(WALLETS, "w"), indent=2)
+    deskio.write_json(WALLETS, good)
     for m in good:
         print(f"{m['wallet'][:8]}…  pnl {m['pnl_sol']:.1f} SOL  win {m['win_rate']:.0%}  "
               f"trades {m['trades']}  hold {m['median_hold']:.0f}s")
@@ -381,16 +390,16 @@ class Paper:
                              "x", "sol_pnl", "note"])
 
     def log(self, ev, mint, wallet="", price=0, x=0, pnl=0, note=""):
-        self.w.writerow([time.strftime("%F %T"), ev, mint, wallet, price,
+        self.w.writerow([deskio.stamp(), ev, mint, wallet, price,
                          round(x, 2), round(pnl, 4), note])
         self.f.flush()
         print(f"[{ev}] {mint[:6]}… x{x:.2f} pnl {pnl:+.3f} SOL {note}")
 
     def save(self):
-        json.dump(self.pos, open(STATE, "w"))
+        deskio.write_json(STATE, self.pos, indent=None)
 
     def _save_bank(self):
-        json.dump(self.bank, open(BANK, "w"), indent=2)
+        deskio.write_json(BANK, self.bank)
 
     def equity_usd(self, px):
         if not self.bank or not px:
@@ -470,6 +479,7 @@ class Paper:
             "deployed_usd": usd(deployed) if bank else 0,
             "available_usd": usd(free) if free is not None else round(float(CFG["budget_usd"]) - reserve, 2),
             "reserve_usd": reserve,
+            "realized_sol": round(realized, 4) if bank else 0,
             "trade_usd": float(CFG["trade_usd"]),
         }
 

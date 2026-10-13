@@ -12,6 +12,7 @@ import time
 
 import aiohttp
 
+import deskio
 import copytrader as ct
 import live
 import tune
@@ -64,11 +65,9 @@ def _load():
 
 
 def _save(data):
-    os.makedirs(ct.DATA, exist_ok=True)
     data["notes"] = data.get("notes") or []
     data["notes"] = data["notes"][:40]
-    with open(PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    deskio.write_json(PATH, data)
 
 
 def add_note(src, text, source):
@@ -645,7 +644,7 @@ def _buy_size(rows, mint, close_time):
 
 def _close_time(row):
     try:
-        return time.mktime(time.strptime(row.get("time") or "", "%Y-%m-%d %H:%M:%S"))
+        return deskio.parse_stamp(row.get("time")) or 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -799,7 +798,7 @@ def _remember(market, did, recent):
     data["market"] = market["text"]
     data.setdefault("growth", [])
     data["growth"].insert(0, {
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
         "closes": len(_closed_rows()),
         "recent": n,
         "win_rate": None if not n else round(wins / n, 2),
@@ -855,7 +854,7 @@ def hire(name, job, powers):
         "job": job,
         "powers": powers,
         "paper": True,
-        "hired": time.strftime("%F %T"),
+        "hired": deskio.stamp(),
         "last": "",
     })
     data["may_hire"] = True
@@ -949,7 +948,7 @@ def staff():
         text = _assist_text(agent)[:240]
         if text and text != agent.get("last"):
             agent["last"] = text
-            agent["seen"] = time.strftime("%F %T")
+            agent["seen"] = deskio.stamp()
             notes_out.append(f"{agent['name']} for Eye: {text}")
     if notes_out:
         _save(data)

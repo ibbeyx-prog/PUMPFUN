@@ -6,6 +6,8 @@ import os
 import re
 import time
 
+import deskio
+
 DATA = os.getenv("DATA_DIR", ".")
 PATH = os.path.join(DATA, "chat.json")
 
@@ -22,9 +24,7 @@ def _load():
 
 
 def _save(rows):
-    os.makedirs(DATA, exist_ok=True)
-    with open(PATH, "w", encoding="utf-8") as f:
-        json.dump(rows[-80:], f, indent=2)
+    deskio.write_json(PATH, rows[-80:])
 
 
 def history():

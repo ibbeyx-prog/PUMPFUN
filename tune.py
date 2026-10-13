@@ -7,6 +7,8 @@ import json
 import os
 import time
 
+import deskio
+
 DATA = os.getenv("DATA_DIR", ".")
 PATH = os.path.join(DATA, "agent_tune.json")
 
@@ -36,9 +38,7 @@ def _load():
 
 
 def _save(data):
-    os.makedirs(DATA, exist_ok=True)
-    with open(PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    deskio.write_json(PATH, data)
 
 
 def value(name, default=None):
@@ -54,7 +54,7 @@ def _clip(name, new):
 def note(what, old, new, why):
     data = _load()
     data["changes"].insert(0, {
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
         "what": what,
         "from": "" if old is None else str(old),
         "to": "" if new is None else str(new),
@@ -71,7 +71,7 @@ def _set(data, name, new, why):
         return False
     data["values"][name] = new
     data["changes"].insert(0, {
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
         "what": name,
         "from": "" if old is None else str(old),
         "to": str(new),
@@ -85,7 +85,7 @@ def _clear(data, name, why):
         return False
     old = data["values"].pop(name)
     data["changes"].insert(0, {
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
         "what": name,
         "from": str(old),
         "to": "off",
@@ -132,7 +132,7 @@ def lock_strategy(why):
         return False
     data["strategy_locked"] = True
     data["changes"].insert(0, {
-        "time": time.strftime("%F %T"),
+        "time": deskio.stamp(),
         "what": "strategy",
         "from": "grinding",
         "to": "stick",
