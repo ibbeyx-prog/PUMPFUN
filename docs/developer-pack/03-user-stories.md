@@ -1,6 +1,6 @@
 # User stories: Paper Scanner
 
-Stories are written from the role that feels the outcome. They match the running desk: paper by default, Eye sizes and grinds, assistants only brief, and Phantom never gives the server a key. Each story can be copied into a backlog as an independent item.
+Stories are written from the role that feels the outcome. They match the running desk: paper by default, Eye sizes and keeps a preset until a real sample pays, assistants only brief, and Phantom never gives the server a key. Each story can be copied into a backlog as an independent item.
 
 Priority words: now (the desk already depends on it), next (needed before live use is trusted), later (not connected).
 
@@ -82,9 +82,17 @@ Priority: now.
 
 As an operator, I want a single Approve click that asks Phantom to sign, so that a paper entry cannot become a chain transaction without me.
 
-Acceptance: Approve appears only for a pending order while wallet trading is on. Cancel or a rejected signature does not mark the order sent. The paper position is independent and may already be open.
+Acceptance: Approve appears only for a pending order while wallet trading is on and the lab gate is open. The button covers a buy and, separately, a sell at a ladder, stop, liquidity drop, or vanish. An empty signature is rejected. A signature is marked sent only after it is confirmed and the linked wallet gained the mint on a buy or spent it on a sell. The paper position does not wait for that signature.
 
 Priority: next.
+
+### OP-11 See the assistants working
+
+As an operator, I want Eye at the head of a floor and the four assistants at stations, so that I can see who is briefing without reading a list.
+
+Acceptance: the floor sits under the eight role cards. A station shows Briefing and a line to Eye only when that assistant has a note. The last paper pick and the latest Eye decision are the live book, not a sample balance. The Agent tab shows the same staff under the goal “A paper book that pays,” with the full note on each card.
+
+Priority: now.
 
 ## Eye
 
@@ -92,7 +100,7 @@ Priority: next.
 
 As Eye, I want to choose the USD size from equity, the fee reserve, and recent win rate, so that a cold or losing book does not bet the whole wallet.
 
-Acceptance: free cash under $4 sizes the trade at $0 and the engine skips it. Under five closes, size is 10% of equity clamped to $4–$8. Worse than a 25% recent win rate sizes $4. A stronger book can size up to $12 and never above free cash. The buy note includes the SOL size, the USD size, and the words phantom paper.
+Acceptance: free cash under $4 sizes the trade at $0 and the engine skips it. Before 30 closes the size is $5.50, or $5 when free cash is at least $5 and under $5.50, otherwise $0. After 30 closes, a recent win rate under 25% sizes $4, under 45% sizes 10% of equity clamped to $4–$8, and a stronger book sizes 15% clamped to $6–$12. Size never exceeds free cash, and a result under $4 is $0. The buy note includes the SOL size, the USD size, and the words phantom paper.
 
 Priority: now.
 
@@ -104,11 +112,11 @@ Acceptance: the reserve used for free-cash math is clamped into that band. The d
 
 Priority: now.
 
-### EY-3 Grind until a run pays
+### EY-3 Refill a flat book without rotating presets
 
-As Eye, I want a flat book refilled to $50 and the next of four presets installed, so that I can keep testing rules without the operator resetting by hand.
+As Eye, I want a flat book refilled to $50 on the same preset, so that one bust does not throw away the rules before the sample is real.
 
-Acceptance: refill runs only when nothing is open, the run has at least one close, and free cash is under $4. The ledger gets a `RESET`. A run with at least 15 closes, at least a 30% win rate, and positive SOL PnL locks the rules instead of changing them. Later refills keep the lock.
+Acceptance: refill runs only when nothing is open, the run has at least one close, and free cash is under $4. The ledger gets a `RESET`. The grind index does not change. A lock happens only at 50 or more sized closes, a mean return above 0, and a 95% interval lower bound above 0. Later refills keep that lock. A lab shadow book can name a winner. Eye does not copy it onto the desk by itself.
 
 Priority: now.
 
@@ -148,7 +156,7 @@ Priority: now.
 
 As Eye, I want Vet, Scan watch, Scribe, and Risk on staff, so that I am briefed before I change a rule.
 
-Acceptance: a second hire of the same name is refused. A name about spending, sizing, or the wallet is refused. Powers outside read scan, read trades, write note, and halt live are dropped. The desk line lists who is assisting.
+Acceptance: a second hire of the same name is refused. A name about spending, sizing, or the wallet is refused. Powers outside read scan, read trades, write note, and halt live are dropped. The floor shows the four stations. The Agent tab shows their notes.
 
 Priority: now.
 
@@ -158,7 +166,7 @@ Priority: now.
 
 As Vet, I want to tell Eye whether RugCheck is reporting and whether I can see holder clusters, so that Eye does not treat a missing map as a clean bill of health.
 
-Acceptance: the brief says RugCheck is live or not reporting yet. Without `BUBBLEMAPS_API_KEY` the brief says clusters cannot be checked. With a key and a successful read, the brief says clusters can be read. Vet does not place an order.
+Acceptance: the brief says RugCheck is live or not reporting yet. Without `BUBBLEMAPS_API_KEY`, Vet names up to three coins and says the public map was opened with the mint as the address and `solana` as the chain, and that cluster scores still need a key. With a key and a successful read, the brief says clusters can be read. Vet does not place an order.
 
 Priority: now.
 
@@ -166,7 +174,7 @@ Priority: now.
 
 As Vet, I want a rugged flag, a danger report, a score of 50 or more, a wallet holding 35% or more, or a tight Bubblemaps cluster to skip the name, so that those facts reach the scorer rather than only the briefing.
 
-Acceptance: the candidate note contains the `rugcheck:` or `bubblemap:` reason. A missing Bubblemaps key does not, by itself, skip every name. The public map link still opens.
+Acceptance: the candidate note contains the `rugcheck:` or `bubblemap:` reason. A missing Bubblemaps key does not, by itself, skip every name. The public map link is `https://v2.bubblemaps.io/map?address=<mint>&chain=solana`.
 
 Priority: now.
 
@@ -248,7 +256,7 @@ Priority: now.
 
 As the paper engine, I want the ladder, the two-poll stop, the 90-minute time stop, and the early cut, so that a paper position does not sit forever.
 
-Acceptance: partial sells reduce `left` and write `SELL`. The final sell writes `SELL` and `CLOSED` and removes the position. The fee of 0.002 SOL is on the open.
+Acceptance: a signal waits about 45 seconds and is abandoned after about 70 seconds without a price. The fill price includes slippage of 3% plus twice the trade size over pool liquidity, capped at 80%. The open books a 1% fee plus $0.20. Positions are priced every 12 seconds. A pool at half the entry liquidity sells the rest. Three confirmed absences close near 10% of the last price. A stop fills at the next poll, not at the stop level. Partial sells reduce `left` and write `SELL`. The final sell writes `SELL` and `CLOSED` and removes the position.
 
 Priority: now.
 
@@ -282,6 +290,34 @@ Priority: later.
 
 As Vet, I want a Bubblemaps key when the operator has one, so that cluster, top-10, and score blocks can fire.
 
-Acceptance: without the key the chip is `key` and the brief says clusters are unchecked. With the key, a cluster of 20% or more, a top 10 of 55% or more, or a score under 40 becomes a skip.
+Acceptance: without the key the chip is `key` and the public map still opens. With the key, a cluster of 20% or more, a top 10 of 55% or more, or a score under 40 becomes a skip.
 
 Priority: next, only after the operator supplies the key. Do not invent one.
+
+## Lab
+
+The lab has no login on the desk. It is a second service that reads the desk and never trades.
+
+### LB-1 Record what the desk saw
+
+As the lab, I want each scan and each desk trade stored in my own database, so that a shadow book can be scored without touching the paper wallet.
+
+Acceptance: the lab calls the desk with the dashboard token and writes hits, episodes, prices, and desk trades. It does not write `trades.csv`, `bank.json`, or any desk key. A missing or placeholder token does not count as a recorded scan.
+
+Priority: now.
+
+### LB-2 Keep live trading closed until the ladder book is real
+
+As the lab, I want one readiness flag for the `desk-ladder` book, so that the desk does not arm Phantom on a short or lucky sample.
+
+Acceptance: ready requires at least 100 closes, a span of at least 14 days, an interval low above 0, and a random percentile of at least 90. Anything else, including a failed fetch, leaves the desk’s live queue closed. Desk equity is not an input.
+
+Priority: next.
+
+### LB-3 Test a runner without switching the desk
+
+As the lab, I want a `desk-runner` book that sells half at 2x and trails the rest, so that the desk can see whether that beats the 5x ladder before anyone changes the live rules.
+
+Acceptance: the runner is a shadow book only. The desk stays on the 5x ladder until that row beats it with an interval that excludes zero, and even then the switch is a manual copy onto the tune fields.
+
+Priority: next.

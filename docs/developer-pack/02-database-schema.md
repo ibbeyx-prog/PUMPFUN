@@ -23,6 +23,8 @@ create table secret_ref (
   birdeye_set     boolean not null default false,
   anthropic_set   boolean not null default false,
   bubblemaps_set  boolean not null default false,
+  lab_url_set     boolean not null default false,
+  lab_key_set     boolean not null default false,
   eye_model       text not null default 'claude-sonnet-5-5'
 );
 ```
@@ -42,6 +44,13 @@ create table book_config (
   max_open_positions          integer not null default 5,
   max_chase_pct               numeric(8,4) not null default 0.25,
   sim_slippage                numeric(8,4) not null default 0.03,
+  slip_impact                 numeric(8,4) not null default 2,
+  slip_cap                    numeric(8,4) not null default 0.80,
+  fee_pct                     numeric(8,4) not null default 0.01,
+  flat_fee_usd                numeric(12,2) not null default 0.20,
+  entry_delay_sec             integer not null default 45,
+  entry_giveup_sec            integer not null default 70,
+  position_poll_sec           integer not null default 12,
   fee_sol                     numeric(18,8) not null default 0.002,
   stop_loss_pct               numeric(8,4) not null default 0.35,
   time_stop_min               integer not null default 90,
@@ -74,7 +83,7 @@ create table ladder_tier (
 
 Seed `ladder_tier` with `(1, 2.0, 0.40)`, `(2, 3.5, 0.30)`, `(3, 5.0, 1.00)`.
 
-`budget_usd`, `trade_usd`, `reserve_usd`, `one_trade_per_coin`, and `size_sol` are locked against Eye's model review. `trade_usd` is overwritten by Eye's sizer, not by that review.
+`budget_usd`, `trade_usd`, `reserve_usd`, `one_trade_per_coin`, and `size_sol` are locked against Eye's model review. `trade_usd` is overwritten by Eye's sizer, not by that review. `fee_sol` is the legacy flat fee. The running fill uses `fee_pct` plus `flat_fee_usd`, and `sim_slippage` plus `slip_impact` against pool liquidity, capped by `slip_cap`. `price_poll_sec` in config is not the position poll. Open positions use `position_poll_sec`.
 
 ## 3. Bank, runs, and ledger
 
@@ -129,12 +138,26 @@ create table position (
   tier        integer not null default 0,
   opened_at   timestamptz not null,
   pnl_sol     numeric(18,8) not null,
+  liq_usd     numeric(16,2) not null default 0,
+  last_price  numeric(24,12),
   last_x      numeric(12,4),
+  misses      integer not null default 0,
+  stop_armed  boolean not null default false,
   check (left_frac >= 0 and left_frac <= 1)
+);
+
+create table pending_entry (
+  mint        text primary key,
+  run_id      bigint not null references paper_run(id),
+  symbol      text not null default '',
+  source      text not null default '',
+  size_sol    numeric(18,8) not null,
+  trade_usd   numeric(12,2) not null,
+  signaled_at timestamptz not null
 );
 ```
 
-Deleting a row is the close. The `CLOSED` ledger row remains.
+`pending_entry` is memory in the current process and is empty after a restart. A database may persist it, but a row older than `entry_giveup_sec` must become a `SKIP`, not a fill. Deleting a `position` row is the close. The `CLOSED` ledger row remains. `pnl_sol` on open already includes the entry fee.
 
 ## 4. Scan
 
@@ -184,6 +207,7 @@ create table candidate (
   bubble_cluster  numeric(8,4),
   bubble_top10    numeric(8,4),
   bubble_label    text not null default '',
+  bubble_url      text not null default '',
   unique (scan_id, mint)
 );
 
@@ -278,7 +302,7 @@ create table grind_preset (
 );
 ```
 
-Seed `grind_preset` with the four rows in the requirements. Application code must still clamp writes to the bounds in section 4.6 of the requirements, and must reject locked-field names.
+Seed `grind_preset` with the four rows in the requirements. A refill must not increment `grind_index`. Application code must still clamp writes to the bounds in section 4.6 of the requirements, and must reject locked-field names. `tune_value` writes from review wait until the open run has 30 `CLOSED` rows, except a chase-cap tightening.
 
 ## 6. Live wallet
 
@@ -303,13 +327,23 @@ create table live_order (
   at          timestamptz not null default now(),
   mint        text not null,
   symbol      text not null default '',
-  usd         numeric(12,2) not null,
+  usd         numeric(12,2) not null default 0,
+  side        text not null default 'buy' check (side in ('buy','sell')),
+  frac        numeric(8,6),
+  why         text not null default '',
   status      text not null check (status in ('pending','sent','failed')),
   signature   text not null default ''
 );
+
+create table live_position (
+  mint    text primary key,
+  symbol  text not null default '',
+  usd     numeric(12,2) not null,
+  left_frac numeric(8,6) not null default 1
+);
 ```
 
-`lock_salt` and `lock_hash` are excluded from every API view. `phantom_address` is the public key only. `signature` is the chain signature returned by the browser. An empty signature cannot set `sent`, and a confirmed signature must also move that order's mint for the linked wallet.
+`lock_salt` and `lock_hash` are excluded from every API view. `phantom_address` is the public key only. `signature` is the chain signature returned by the browser. An empty signature cannot set `sent`. `sent` also requires `getSignatureStatuses` confirmed or finalized, and `getTransaction` showing the linked wallet gained the mint on a buy or spent it on a sell. A confirmed buy inserts or updates `live_position`. A confirmed sell reduces `left_frac`.
 
 ## 7. Reports, chat, wallets, study
 
@@ -373,11 +407,11 @@ Chat retention is the latest 80 messages. Wallet rows are replaced on each ranki
 | File today | Tables |
 | --- | --- |
 | `trades.csv` | `ledger` |
-| `state.json` | `position` |
+| `state.json` | `position`, `pending_entry` |
 | `bank.json` | `bank`, `paper_run` |
 | `eye_knowledge.json` | `eye_note`, `eye_state`, `eye_growth`, `assistant`, `assistant_power` |
 | `agent_tune.json` | `tune_value`, `tune_state`, `tune_change` |
-| `live_state.json` | `live_guard`, `live_order` |
+| `live_state.json` | `live_guard`, `live_order`, `live_position` |
 | `reports.json` | `report`, `report_edit` |
 | `chat.json` | `chat_message` |
 | `wallets.json` | `tracked_wallet` |
@@ -390,6 +424,75 @@ Chat retention is the latest 80 messages. Wallet rows are replaced on each ranki
 - `reserve_usd` is clamped to the closed interval from 3 to 5 before sizing.
 - A buy is refused when free USD above the reserve is under 4, or when the chosen size is under 4.
 - `RESET` inserts a ledger row and a new `paper_run`, zeroes `realized_sol`, and deletes open positions. It does not change `live_guard.phantom_address`.
-- Strategy lock requires at least 15 `CLOSED` rows in the open run, win rate at least 0.30, and the sum of `sol_pnl` greater than 0.
+- Strategy lock requires at least 50 sized `CLOSED` rows in the open run, a mean of `sol_pnl / buy size` above 0, and a 95% bootstrap lower bound above 0. Unsizable closes are excluded from that test.
+- Sizing before 30 closes is $5.50, or $5 when free cash is in `[$5, $5.50)`, else $0. After 30 closes, size uses the win rate of the latest 15 closes, still never above free cash and never under $4.
 - Model output may update `tune_value` only inside bounds, and only when `strategy_locked` is false. Hostile web notes additionally forbid lowering `entry_score`, raising `max_change_5m`, or lowering `min_sources`.
 - Assistant names that match the denied words in the requirements are rejected before insert.
+
+## 10. Paper Scanner Lab
+
+The lab is a second database. It is not the paper book. SQLite today, under the lab’s own `DATA_DIR`. Times in the running file are unix seconds. A PostgreSQL port should use `timestamptz`.
+
+```sql
+create table lab_hit (
+  id          bigint generated always as identity primary key,
+  scanned_at  timestamptz not null,
+  recorded_at timestamptz not null,
+  mint        text not null,
+  symbol      text not null default '',
+  score       numeric(8,2),
+  decision    text not null default '',
+  note        text not null default '',
+  sources     jsonb not null default '[]',
+  mcap_usd    numeric(16,2),
+  liq_usd     numeric(16,2),
+  change_5m   numeric(10,2),
+  price_sol   numeric(24,12),
+  age_min     numeric(10,2),
+  rug_label   text not null default ''
+);
+
+create table lab_episode (
+  id          bigint generated always as identity primary key,
+  mint        text not null,
+  symbol      text not null default '',
+  started_at  timestamptz not null,
+  track_until timestamptz not null,
+  score       numeric(8,2),
+  decision    text not null default '',
+  note        text not null default '',
+  sources     jsonb not null default '[]',
+  mcap_usd    numeric(16,2),
+  liq_usd     numeric(16,2),
+  change_5m   numeric(10,2),
+  age_min     numeric(10,2),
+  rug_label   text not null default '',
+  done        boolean not null default false
+);
+
+create table lab_price (
+  episode_id  bigint not null references lab_episode(id) on delete cascade,
+  at          timestamptz not null,
+  price_sol   numeric(24,12) not null,
+  primary key (episode_id, at)
+);
+
+create table lab_desk_trade (
+  id          bigint generated always as identity primary key,
+  time_text   text not null default '',
+  event       text not null default '',
+  mint        text not null default '',
+  source      text not null default '',
+  price_sol   numeric(24,12),
+  multiple_x  numeric(12,4),
+  sol_pnl     numeric(18,8),
+  note        text not null default ''
+);
+
+create table lab_meta (
+  k  text primary key,
+  v  text not null
+);
+```
+
+Shadow-book results, including `desk-ladder` and `desk-runner`, are computed from episodes and prices. They are a report, not rows the desk writes back. The live gate reads `desk-ladder` closes, the span from the earliest to latest `started_at`, the interval low, and the random percentile.

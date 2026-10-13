@@ -11,8 +11,9 @@ Paper Scanner is a single-operator Solana meme-coin desk. It scans public feeds,
 - Trade size is written only by `choose_trade_usd()` into the live config, not by review JSON.
 - A paper entry needs a confirming market: GMGN, DexScreener, or Birdeye. pump.fun and FOMO can add score. They cannot confirm an entry alone.
 - One new paper entry per scan. One open position per mint. Cooldown after a buy is 180 minutes.
-- When the flat wallet cannot fund a buy above the fee reserve, and the current run has at least one close, Eye refills the paper bank to $50 and either keeps a paying strategy or advances to the next grind preset.
-- A strategy locks when the current run has at least 15 closes, win rate at least 30%, and net positive SOL PnL. Locked rules are not loosened or replaced.
+- Until 30 closes, Eye sizes a fixed $5.50, or $5 when free cash is between $5 and $5.50. After 30 closes, size follows the recent win rate. Free cash under $4, or a computed size under $4, skips the buy.
+- When the flat wallet cannot fund a buy above the fee reserve, and the current run has at least one close, Eye refills the paper bank to $50 and keeps the current preset. A bust does not advance the grind index.
+- A strategy locks only when the current run has at least 50 closes, the mean return per trade is above 0, and the 95% bootstrap interval’s lower bound is above 0, after the harsh fill costs. Locked rules are not loosened or replaced. The lab may name a shadow-book winner. The desk does not adopt it by itself.
 - The dashboard API requires `Authorization: Bearer <DASH_TOKEN>` when that variable is set. The token is stored in the browser as `dash_token`. It is not a user account.
 - Secrets (`HELIUS_API_KEY`, `DASH_TOKEN`, `FOMO_API_KEY`, `BIRDEYE_API_KEY`, `ANTHROPIC_API_KEY`, `BUBBLEMAPS_API_KEY`, spend-lock hash and salt) are environment or gitignored files. They are never returned by the API and never written into these documents.
 
@@ -29,7 +30,7 @@ Paper Scanner is a single-operator Solana meme-coin desk. It scans public feeds,
 | Paper engine | System | Scans, scores, opens and manages simulated positions, writes the ledger. |
 | Phantom signer | Operator, in the browser | Holds the key. Signs a Jupiter swap only after an explicit Approve click. |
 
-Desk cards (Chief, Scan, Vet, Social, Size, Fills, Risk, Crawler) are a display of current state. They are not extra logins. Social stays off because X and Telegram are not connected.
+Desk cards (Chief, Scan, Vet, Social, Size, Fills, Risk, Crawler) are a display of current state. They are not extra logins. Social stays off because X and Telegram are not connected. The Eye floor under those cards is the same four assistants at work. It is not a fifth login.
 
 Hiring rejects any assistant whose name contains trade, trader, phantom, spend, spender, size, sizer, wallet, budget, or live. Allowed powers are only `read_scan`, `read_trades`, `write_note`, and `halt_live`. The roster caps at the four assistants above.
 
@@ -72,6 +73,17 @@ Desk cards:
 | Fills | Recent buy and sell count | open position count |
 | Risk | `halted` or `open` | live cap and whether the spend lock is set |
 | Crawler | Count of feeds that returned ok | feed names |
+
+Eye floor, directly under the cards:
+
+| Piece | What it shows |
+| --- | --- |
+| Header | Phase, last paper pick, and how many of the four assistants are briefing |
+| Eye | Boss station. Latest growth sentence, otherwise the strategy line |
+| Vet, Scan watch, Scribe, Risk | A station each. A line to Eye while that assistant has a briefing. Waiting stations stay dim |
+| Goal, on the Agent tab | “A paper book that pays.” The written briefs, market sentence, and strategy sit under the same diagram |
+
+The floor uses the live book. It does not invent a balance.
 
 Feed chips, each with a state of `live`, `ready`, `link`, `key`, `down`, or `off`:
 
@@ -123,7 +135,7 @@ Table of up to 12 candidates.
 | Liq | USD liquidity |
 | 5m | Five-minute percent change |
 | Rug | RugCheck label, linked to rugcheck.xyz |
-| Map | Bubblemaps cluster percent, or the word `map`, linked to the public Solana map |
+| Map | Bubblemaps cluster percent when a key returned one, otherwise the word `map`. Link is `https://v2.bubblemaps.io/map?address=<mint>&chain=solana`. A stored `chain=sol` is rewritten to `solana` |
 
 Empty state: "First scan still running."
 
@@ -145,12 +157,13 @@ One row per completed 24-hour window: start, end, closed count, win rate, SOL Pn
 
 | Block | Contents |
 | --- | --- |
+| Eye desk | Goal, Eye as boss, and the four briefing cards. Same staff as the floor, with the full note on each card |
 | Agent read | Lesson from the current run once five closes exist |
 | Skills | Eight fixed paper checks and when they were last studied |
-| Eye | Strategy line, assistant briefs, market sentence, growth history, improvement tips, learned notes |
-| Agent changes | Time, setting, old value, new value, reason |
+| Eye | Growth history, improvement tips, learned notes. The written strategy and briefs are on the desk above |
+| Agent changes | Time, setting, old value, new value, reason. Empty until Eye has 30 closed trades |
 
-Strategy line is either "Grinding strategy N of 4" or "Sticking with this strategy" when locked.
+Strategy line is “Keeping strategy N of 4. A bust does not rotate presets.” or “Sticking with this strategy” when locked.
 
 Learned notes are tagged `market` (web) or `own trades`.
 
@@ -192,14 +205,20 @@ A current run is every row after the latest `RESET`. Lifetime rows before that r
 | --- | --- | --- |
 | mint | key | One open position per mint |
 | symbol | string | From the scan |
-| entry | number | Price times 1.03 simulated slippage |
+| entry | number | Price about 45 seconds after the signal, times one plus slippage |
 | left | number | Fraction remaining, starts at 1 |
 | tier | integer | Ladder step already sold |
 | wallet | string | Source label copied onto the buy |
-| t0 | unix time | Opened at |
-| pnl | number | SOL, starts at minus the 0.002 SOL fee |
+| t0 | unix time | Opened at, after the delay |
+| pnl | number | SOL. Starts at minus the entry fee: 1% of size plus $0.20 |
 | size_sol | number | SOL notionally swapped |
-| last_x | number | Latest multiple, used for equity |
+| liq_usd | number | Pool liquidity at the fill. Unknown stays 0 and slippage stays 3% |
+| last_price | number | Last quoted SOL price |
+| last_x | number | Latest multiple, used for equity. Set at the fill so slippage shows immediately |
+| misses | integer | Confirmed DexScreener absences. A timeout or HTTP 429 does not increment this |
+| stop_armed | boolean | True after price is at the stop. The fill is the next poll, not the stop level. A recovery does not clear it |
+
+A signal that has not filled yet lives only in memory as a pending entry: mint, source, symbol, size, USD, and the signal time. It is dropped on restart. The engine gives up if no price arrives between 45 and 70 seconds, and writes `SKIP` with note `missed the 45s entry price`.
 
 ### 4.3 Bank
 
@@ -255,7 +274,11 @@ Bounds Eye and the model may write:
 
 Also stored: `reviewed_closes`, `changes[]` (time, what, from, to, why), `grind` index, `strategy_locked` and its reason.
 
-Grind presets, applied in order after a bust:
+Rule changes other than a chase-cap tightening wait for 30 closes. Review, including Anthropic’s settings, waits for the same 30 closes. A hostile research note still blocks loosening `entry_score`, raising `max_change_5m`, or lowering `min_sources`.
+
+The four presets below are named strategies. The grind index is not incremented when the wallet is refilled. A later switch waits until a lab shadow book beats the desk ladder with an interval that excludes zero. The desk does not switch by itself.
+
+Grind presets:
 
 | # | min_sources | entry_score | max_change_5m | early_cut_x | early_cut_min |
 | --- | --- | --- | --- | --- | --- |
@@ -275,7 +298,9 @@ Grind presets, applied in order after a bust:
 | phantom | Public address only |
 | wallet_trade | True only after Allow trades |
 | lock_salt, lock_hash | Never returned by the API |
-| orders[] | mint, symbol, usd, status (`pending`, `sent`, `failed`), signature, time |
+| orders[] | id, mint, symbol, usd, side (`buy` or `sell`), frac, why, status (`pending`, `sent`, `failed`), signature, time |
+| positions[] | Live inventory after a confirmed buy: mint, symbol, usd, left |
+| lab_ready, lab_reason | Whether the lab gate currently allows a live queue. Not a stored secret |
 
 ### 4.8 Other stored objects
 
@@ -330,19 +355,23 @@ Exits, checked on the price poll:
 | Early cut | Under `early_cut_x` after `early_cut_min` minutes, once that rule is on |
 | Wallet sell | If wallet-follow is on and the copied wallet sells |
 
-Slippage on the simulated fill is 3%. The fee booked at entry is 0.002 SOL.
+Slippage per side is `min(80%, 3% + 2 × trade_usd / pool_liquidity_usd)`. Unknown liquidity stays at 3%. Fee is 1% per side plus $0.20 converted to SOL at the current price. The entry fee is subtracted from realized SOL when the position opens, and it is included in the position PnL so a later `CLOSED` row matches the bank.
 
-Eye size, from equity after the $5 reserve:
+Open positions are priced every 12 seconds. A pool that is half the entry liquidity, or less, sells the rest. Three confirmed DexScreener absences close at about 10% of the last price. A stop arms when price is at or below −35% and fills at the next poll’s price.
+
+Eye size, from equity after the $5 reserve. Recent win rate is the last 15 closes:
 
 | Book | Size |
 | --- | --- |
 | Free cash under $4 | $0, and the buy is skipped |
-| Fewer than 5 closes | 10% of equity, clamped to $4–$8 |
+| Fewer than 30 closes, free cash at least $5.50 | $5.50 |
+| Fewer than 30 closes, free cash at least $5 | $5 |
+| Fewer than 30 closes, free cash under $5 | $0 |
 | Recent win rate under 25% | $4 |
 | Recent win rate under 45% | 10% of equity, clamped to $4–$8 |
 | Otherwise | 15% of equity, clamped to $6–$12 |
 
-Size never exceeds free cash. The buy note reads `SYMBOL size X SOL · $Y phantom paper`.
+Size never exceeds free cash, and a result under $4 is $0. The buy note reads `SYMBOL size X SOL · $Y phantom paper`. Lock statistics use `sol_pnl / buy size` for closes whose buy note has a parseable size. Closes without that size are left out of the interval.
 
 ## 6. Workflows
 
@@ -352,12 +381,12 @@ Size never exceeds free cash. The buy note reads `SYMBOL size X SOL · $Y phanto
 2. Names are merged by mint. Solana FOMO rows use network id `1399811149` and a nested token address. EVM `0x` addresses are ignored.
 3. Up to eight names that are not already skipped are sent to RugCheck and, when keyed, Bubblemaps. The score is computed again.
 4. Eye tends the wallet, then chooses the USD size.
-5. The first `enter` that is not already open, not in cooldown, and has a DexScreener SOL price is bought. Missing price is a `SKIP`.
-6. If wallet trading is on, the same mint is queued for Phantom. The paper fill does not wait for that signature.
+5. The first `enter` that is not already open and not in cooldown is held as a pending entry. About 45 seconds later the engine prices it. No price by about 70 seconds writes `SKIP` and does not open a position.
+6. The delayed fill opens the paper position. If wallet trading is on and the lab gate is open, that fill queues a Phantom buy. The paper fill does not wait for the signature.
 
 ### 6.2 Manage an open position
 
-Every few seconds the engine prices open mints and applies the ladder, stop, time stop, and early cut. A full exit writes `SELL` and then `CLOSED`. Partial ladder sells write `SELL` and leave the position open.
+Every 12 seconds the engine prices open mints and applies the ladder, the armed stop, the liquidity drop, the vanish rule, the time stop, and the early cut. A full exit writes `SELL` and then `CLOSED`. Partial ladder sells write `SELL` and leave the position open. A qualifying exit also queues an approve-to-sell order when a live position in that mint still has size left. Nothing is broadcast until the operator approves.
 
 ### 6.3 Eye pass
 
@@ -389,6 +418,16 @@ When nothing is open, the run has at least one close, and free cash is under $4:
 
 When 24 hours have elapsed since the book origin, or since the previous report, the engine writes one report from ledger rows and tune changes in that window.
 
+### 6.7 Eye floor
+
+On each staff pass, Vet, Scan watch, Scribe, and Risk each write one note if their text changed. The main screen draws those four as stations under Eye. The Agent tab draws the same staff with the goal “A paper book that pays” and the full briefing text. A station with an empty note is Waiting.
+
+### 6.8 Paper Scanner Lab
+
+The lab is a separate process. It reads the desk’s candidate and trade endpoints. It does not send orders, and it does not write the desk’s files or keys. It stores hits, price episodes, and a copy of desk trades, then scores shadow books including `desk-ladder` and `desk-runner`.
+
+`readiness.ready` is true only when `desk-ladder` has at least 100 closes, the episode span is at least 14 days, the confidence-interval low is above 0, and the random percentile is at least 90. The desk reads that report from `LAB_URL` with `LAB_KEY` about every 10 minutes. If either variable is missing, or the report fails, live queueing stays closed. Desk PnL is not the live gate.
+
 ## 7. Interfaces
 
 | Method | Path | Purpose |
@@ -417,7 +456,10 @@ Environment:
 | `FOMO_API_KEY` | No | Holder board |
 | `BIRDEYE_API_KEY` | No | Trending confirmation. The name must not include a trailing space |
 | `ANTHROPIC_API_KEY` | No | Research and review. Model is `EYE_MODEL` or `claude-sonnet-5-5` |
-| `BUBBLEMAPS_API_KEY` | No | Holder clusters |
+| `BUBBLEMAPS_API_KEY` | No | Holder-cluster scores. The public map link works without it |
+| `EYE_MODEL` | No | Research model. Default `claude-sonnet-5-5` |
+| `EYE_RESEARCH_HOURS` | No | Hours between successful research passes. Default 24 |
+| `LAB_URL`, `LAB_KEY` | No | Lab report used as the live gate. Missing values keep live queueing closed |
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |
 
@@ -431,7 +473,11 @@ Environment:
 - Five wrong lock codes halt live trading. Eye cannot clear that halt.
 - Refill writes `RESET`, sets realized SOL to 0, and does not change a linked Phantom address.
 - The dashboard token, PIN, and API keys are absent from API responses and from the git commit of these documents.
+- The Eye floor shows Eye and the four assistants, and a briefing line moves only while that assistant has a note.
+- A public map link uses the mint as `address` and `solana` as `chain`.
+- A bust refills to $50 and does not change the grind index.
+- A live queue is refused while `LAB_URL` or `LAB_KEY` is unset.
 
 ## 9. Out of scope
 
-X, Telegram, Axiom, Robinhood, Dune, TradingView, CoinGlass, and CoinMarketCap are not feeds. Hiring more assistants, unsupervised live trading, and giving the server a private key are out of scope. The paper book does not promise a profit.
+X, Telegram, Axiom, Robinhood, Dune, TradingView, CoinGlass, and CoinMarketCap are not feeds. Hiring more assistants, unsupervised live trading, and giving the server a private key are out of scope. A creator websocket, an early-entry stream, and automatic adoption of a lab shadow book are out of scope. The paper book does not promise a profit.
