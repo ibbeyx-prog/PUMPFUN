@@ -108,14 +108,37 @@ def _pair_liq(p):
         return 0.0
 
 
-async def price_sol(s, mint):
-    """SOL per token from the deepest WSOL pair whose USD price implies a sane SOL price.
+ENTRY_DELAY_S = 45
+POSITION_POLL_S = 12
+FEE_PCT = 0.01
+FLAT_USD = 0.20
 
-    Dust pools sometimes print a price thousands of times off the real market. Those
-    fail the implied-SOL check and cannot open or stop out a paper position.
+
+def slip_pct(trade_usd, liq_usd):
+    """3% plus constant-product impact. Unknown liquidity stays at 3%. A thin pool is capped at 80%."""
+    liq = float(liq_usd or 0)
+    if liq <= 0:
+        return 0.03
+    return min(0.80, 0.03 + 2.0 * float(trade_usd or 0) / liq)
+
+
+def flat_sol(px):
+    if not px:
+        return 0.0
+    return FLAT_USD / float(px)
+
+
+async def price_quote(s, mint):
+    """Return (price SOL, liquidity USD, confirmed missing).
+
+    The third value is true only when DexScreener answered and had no sane WSOL pair.
+    A timeout or a rate limit is not a missing token, so it cannot trigger a vanish exit.
+    Dust pools that imply an impossible SOL price are ignored.
     """
     try:
         async with s.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}") as r:
+            if r.status != 200:
+                return None, None, False
             pairs = (await r.json()).get("pairs") or []
         good = []
         for p in pairs:
@@ -133,11 +156,17 @@ async def price_sol(s, mint):
                 continue
             good.append((_pair_liq(p), native))
         if not good:
-            return None
+            return None, None, True
         liquid = [g for g in good if g[0] >= 500]
-        return max(liquid or good)[1]
+        liq, native = max(liquid or good)
+        return native, liq, False
     except Exception:
-        return None
+        return None, None, False
+
+
+async def price_sol(s, mint):
+    price, _liq, _missing = await price_quote(s, mint)
+    return price
 
 
 # ───────────────────────── Discovery + scoring ─────────────────────────
@@ -335,6 +364,7 @@ class Paper:
         for p in self.pos.values():
             if not p.get("size_sol"):
                 p["size_sol"] = 0.1
+        self.pending = {}
         self.bought = set()
         if os.path.exists(TRADES):
             with open(TRADES, newline="", encoding="utf-8", errors="replace") as f:
@@ -408,6 +438,7 @@ class Paper:
         if not self.bank or not px:
             return 0.0
         deployed = sum(self._pos_size(p) * float(p.get("left") or 0) for p in self.pos.values())
+        deployed += sum(float(item.get("size_sol") or 0) for item in self.pending.values())
         reserve = self.fee_reserve_usd() / px
         return float(self.bank["start_sol"]) + float(self.bank.get("realized_sol") or 0) - deployed - reserve
 
@@ -417,6 +448,7 @@ class Paper:
         start_sol = float(bank.get("start_sol") or 0)
         realized = float(bank.get("realized_sol") or 0)
         deployed = sum(self._pos_size(p) * float(p.get("left") or 0) for p in self.pos.values())
+        deployed += sum(float(item.get("size_sol") or 0) for item in self.pending.values())
         unreal = 0.0
         for p in self.pos.values():
             held = self._pos_size(p) * float(p.get("left") or 0)
@@ -442,7 +474,7 @@ class Paper:
         }
 
     async def buy(self, session, mint, wallet, price, symbol=""):
-        if CFG.get("one_trade_per_coin", True) and (mint in self.bought or mint in self.pos):
+        if CFG.get("one_trade_per_coin", True) and (mint in self.bought or mint in self.pos or mint in self.pending):
             self.log("SKIP", mint, wallet, note="already bought this coin")
             return False
         px = await sol_usd(session)
@@ -455,59 +487,121 @@ class Paper:
         if size > free + 1e-9:
             self.log("SKIP", mint, wallet, note=f"budget: need {size:.4f} SOL, free {free:.4f} SOL")
             return False
-        self.open(mint, wallet, price, symbol=symbol, size_sol=size)
+        self.pending[mint] = {
+            "wallet": wallet,
+            "symbol": symbol,
+            "size_sol": size,
+            "trade_usd": float(CFG["trade_usd"]),
+            "at": time.time(),
+        }
         return True
 
-    def open(self, mint, wallet, price, symbol="", size_sol=None):
-        if not size_sol or size_sol <= 0:
+    def open(self, mint, wallet, price, symbol="", size_sol=None, liq_usd=None, trade_usd=None, sol_px=None):
+        if not size_sol or size_sol <= 0 or not price:
             self.log("SKIP", mint, wallet, note="budget: no trade size")
             return
-        fill = price * (1 + CFG["sim_slippage"])
+        usd = float(trade_usd if trade_usd is not None else CFG.get("trade_usd") or 0)
+        fill = price * (1 + slip_pct(usd, liq_usd))
+        fee = float(size_sol) * FEE_PCT + flat_sol(sol_px)
         self.pos[mint] = dict(entry=fill, left=1.0, tier=0, wallet=wallet,
-                              t0=time.time(), pnl=-CFG["fee_sol"], symbol=symbol,
-                              size_sol=float(size_sol))
+                              t0=time.time(), pnl=-fee, symbol=symbol,
+                              size_sol=float(size_sol), liq_usd=float(liq_usd or 0),
+                              last_price=float(price), last_x=(price / fill) if fill else 1,
+                              misses=0, stop_armed=False)
         self.bought.add(mint)
+        if self.bank is not None and fee:
+            self.bank["realized_sol"] = float(self.bank.get("realized_sol") or 0) - fee
+            self._save_bank()
         label = f"{symbol} " if symbol else ""
-        usd = float(CFG.get("trade_usd") or 0)
         self.log("BUY", mint, wallet, fill, note=f"{label}size {size_sol:.4f} SOL · ${usd:.2f} phantom paper")
         self.save()
+        try:
+            import live
+            live.queue_phantom(mint, symbol, usd)
+        except Exception:
+            pass
 
-    def sell(self, mint, price, frac, why):
+    def sell(self, mint, price, frac, why, liq_usd=None, sol_px=None):
         p = self.pos[mint]
         frac = min(frac, p["left"])
         size = self._pos_size(p)
-        x = price / p["entry"]
-        proceeds = size * frac * x * (1 - CFG["sim_slippage"])
-        pnl = proceeds - size * frac - CFG["fee_sol"]
+        entry = float(p["entry"] or 0)
+        x = (price / entry) if entry else 0
+        gross = size * frac * x
+        notional = gross * float(sol_px or 0)
+        pool = liq_usd if liq_usd is not None else p.get("liq_usd")
+        slip = slip_pct(notional or float(CFG.get("trade_usd") or 0) * frac, pool)
+        proceeds = gross * (1 - slip) * (1 - FEE_PCT) - flat_sol(sol_px)
+        pnl = proceeds - size * frac
         p["left"] -= frac
         p["pnl"] += pnl
         if self.bank is not None:
             self.bank["realized_sol"] = float(self.bank.get("realized_sol") or 0) + pnl
             self._save_bank()
         self.log("SELL", mint, p["wallet"], price, x, pnl, why)
+        try:
+            import live
+            live.queue_sell(mint, p.get("symbol") or "", frac, why)
+        except Exception:
+            pass
         if p["left"] <= 1e-9:
             self.log("CLOSED", mint, p["wallet"], price, x, p["pnl"], "position total")
             del self.pos[mint]
         self.save()
 
+    async def _fill_pending(self, s, sol_px):
+        now = time.time()
+        for mint in list(self.pending):
+            item = self.pending[mint]
+            age = now - float(item.get("at") or now)
+            if age < ENTRY_DELAY_S:
+                continue
+            if age > 70:
+                self.pending.pop(mint, None)
+                self.log("SKIP", mint, item.get("wallet") or "", note="missed the 45s entry price")
+                continue
+            price, liq, _missing = await price_quote(s, mint)
+            if not price:
+                continue
+            self.pending.pop(mint, None)
+            self.open(
+                mint, item.get("wallet") or "", price, symbol=item.get("symbol") or "",
+                size_sol=item.get("size_sol"), liq_usd=liq, trade_usd=item.get("trade_usd"),
+                sol_px=sol_px,
+            )
+
     async def manage(self, s):
-        """Check open positions against the exit ladder / stops."""
+        """Check open positions against the exit ladder / stops. Polls every 12s."""
         while True:
+            sol_px = await sol_usd(s)
+            await self._fill_pending(s, sol_px)
             for mint in list(self.pos):
-                p = self.pos[mint]
-                price = await price_sol(s, mint)
+                p = self.pos.get(mint)
+                if not p:
+                    continue
+                price, liq, missing = await price_quote(s, mint)
                 if not price:
+                    if not missing:
+                        continue
+                    p["misses"] = int(p.get("misses") or 0) + 1
+                    if p["misses"] >= 3:
+                        last = float(p.get("last_price") or 0) or float(p.get("entry") or 0)
+                        self.sell(mint, last * 0.10, 1.0, "vanished", liq_usd=0, sol_px=sol_px)
                     continue
-                x = price / p["entry"]
+                p["misses"] = 0
+                p["last_price"] = price
+                if p.get("stop_armed"):
+                    self.sell(mint, price, 1.0, "stop-loss", liq_usd=liq, sol_px=sol_px)
+                    continue
+                x = price / p["entry"] if p.get("entry") else 0
                 p["last_x"] = x
-                if x <= 1 - CFG["stop_loss_pct"]:
-                    # One bad price print must not close the position. Confirm on the next poll.
-                    if p.get("stop_seen"):
-                        self.sell(mint, price, 1.0, "stop-loss")
-                    else:
-                        p["stop_seen"] = True
+                entry_liq = float(p.get("liq_usd") or 0)
+                if entry_liq and liq is not None and liq <= entry_liq * 0.5:
+                    self.sell(mint, price, 1.0, "liquidity pulled", liq_usd=liq, sol_px=sol_px)
                     continue
-                p["stop_seen"] = False
+                if x <= 1 - CFG["stop_loss_pct"]:
+                    p["stop_armed"] = True
+                    continue
                 import tune
                 cut_x = tune.value("early_cut_x")
                 cut_min = float(tune.value("early_cut_min") or 10)
@@ -515,7 +609,7 @@ class Paper:
                 if cut_x and age_min >= cut_min and x <= float(cut_x) and x < CFG["ladder"][0]["x"]:
                     if p.get("cut_seen"):
                         sym = p.get("symbol") or mint[:6]
-                        self.sell(mint, price, 1.0, "agent cut")
+                        self.sell(mint, price, 1.0, "agent cut", liq_usd=liq, sol_px=sol_px)
                         tune.note("exit", sym, f"{x:.2f}x",
                                   f"cut under {cut_x}x after {int(cut_min)}m")
                     else:
@@ -523,16 +617,19 @@ class Paper:
                     continue
                 p["cut_seen"] = False
                 if time.time() - p["t0"] > CFG["time_stop_min"] * 60 and x < CFG["ladder"][0]["x"]:
-                    self.sell(mint, price, 1.0, "time-stop"); continue
-                while p["tier"] < len(CFG["ladder"]) and x >= CFG["ladder"][p["tier"]]["x"]:
+                    self.sell(mint, price, 1.0, "time-stop", liq_usd=liq, sol_px=sol_px)
+                    continue
+                # The 5x ladder stays. A 2x sale plus a 30% trail is not used until the
+                # lab's desk-runner book beats this ladder with its interval above zero.
+                while mint in self.pos and p["tier"] < len(CFG["ladder"]) and x >= CFG["ladder"][p["tier"]]["x"]:
                     tier = CFG["ladder"][p["tier"]]
                     p["tier"] += 1
-                    # frac of ORIGINAL size; last tier sells everything left
                     frac = p["left"] if tier["sell_frac"] >= 1 else tier["sell_frac"]
-                    self.sell(mint, price, frac, f"ladder {tier['x']}X")
-                    if mint not in self.pos:
+                    self.sell(mint, price, frac, f"ladder {tier['x']}X", liq_usd=liq, sol_px=sol_px)
+                    p = self.pos.get(mint)
+                    if not p:
                         break
-            await asyncio.sleep(CFG["price_poll_sec"])
+            await asyncio.sleep(POSITION_POLL_S)
 
     async def on_wallet_tx(self, s, wallet, sig):
         if sig in self.seen:

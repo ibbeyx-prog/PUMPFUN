@@ -16,7 +16,6 @@ import aiohttp
 import checks
 import copytrader as ct
 import eye
-import live
 import skills
 import tune
 
@@ -545,6 +544,9 @@ async def scan_once(session):
     ranked = []
     for c in book.values():
         if len(c["sources"]) == 1 and "pump.fun" in c["sources"] and not c["live"] and (c["mcap"] or 0) < cfg("min_mcap_usd", 6000):
+            row = public(c, 0, "skip", "pump only, below min mcap")
+            row["_price"] = c["price_sol"]
+            ranked.append(row)
             continue
         score, decision, note = decide(c)
         row = public(c, score, decision, note)
@@ -597,7 +599,7 @@ async def scan_loop(eng, session, status):
         ranked, sources = await scan_once(session)
         skills.observe(ranked)
         shown = []
-        for row in ranked[:25]:
+        for row in ranked:
             item = dict(row)
             item.pop("_price", None)
             shown.append(item)
@@ -636,7 +638,6 @@ async def scan_loop(eng, session, status):
             opened = await eng.buy(session, mint, "+".join(row["sources"]), price, symbol=row.get("symbol") or "")
             if not opened:
                 continue
-            live.queue_phantom(mint, row.get("symbol") or "", usd)
             entered += 1
         if entered:
             status["phase"] = f"paper entry · {status['phase']}"
