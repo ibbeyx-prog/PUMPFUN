@@ -416,7 +416,10 @@ def decide(c):
             notes.append(f"already ran {ch:.0f}%")
         else:
             notes.append(f"5m {ch:.0f}% flat")
-    if (c["smart"] or 0) >= 3:
+    rules = eye.tool_rules()
+    if (c["smart"] or 0) >= 3 and rules["late_copy"]:
+        notes.append("eye: copy arrives late")
+    elif (c["smart"] or 0) >= 3:
         score += 12
         notes.append(f"{int(c['smart'])} smart wallets")
     if (c["holders"] or 0) >= 80:

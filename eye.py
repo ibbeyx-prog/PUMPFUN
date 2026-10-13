@@ -90,6 +90,33 @@ def notes():
     return _load()["notes"]
 
 
+_RULES = {"at": 0.0, "rules": None}
+
+
+def tool_rules():
+    """What Eye's web search and page fetch already found. Entries have to respect it."""
+    now = time.time()
+    if _RULES["rules"] is not None and now - _RULES["at"] < 30:
+        return _RULES["rules"]
+    late_copy = False
+    hostile = False
+    for note in notes():
+        if note.get("src") != "web" or (note.get("source") or "") == "dexscreener":
+            continue
+        text = (note.get("text") or "").lower()
+        if any(phrase in text for phrase in (
+            "smart-money", "smart wallet", "copy-trading", "copy trading", "copying public",
+        )):
+            late_copy = True
+        if any(phrase in text for phrase in (
+            "down at least 90", "survival is very low", "pump-and-dump", "rug behavior", "bundled",
+        )):
+            hostile = True
+    rules = {"late_copy": late_copy, "hostile": hostile}
+    _RULES.update(at=now, rules=rules)
+    return rules
+
+
 def _parse_json(text):
     raw = str(text or "").strip()
     if "```" in raw:
@@ -127,7 +154,11 @@ async def _anthropic(session, prompt, use_search):
                 "messages": messages,
             }
             if use_search:
-                body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}]
+                body["tools"] = [
+                    {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
+                    {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 2,
+                     "citations": {"enabled": True}},
+                ]
             async with session.post(
                 "https://api.anthropic.com/v1/messages",
                 json=body,
@@ -164,9 +195,10 @@ async def _anthropic(session, prompt, use_search):
 
 def _research_prompt():
     return (
-        "Research the current Solana meme-coin market. Cover pump.fun and PumpSwap "
-        "fee and mechanics changes, rug bundling and sniping patterns, why copying "
-        "smart-money wallets fails, latency and MEV, and the market regime. "
+        "Research the current Solana meme-coin market. Search, then fetch the one "
+        "most relevant page. Cover pump.fun and PumpSwap fee and mechanics changes, "
+        "rug bundling and sniping patterns, why copying smart-money wallets fails, "
+        "latency and MEV, and the market regime. "
         "Reply with JSON only, no markdown: "
         '{"notes":[{"text":"...","source":"domain"}]} '
         "with 4 to 6 concrete facts. Each text under 240 characters."
@@ -249,6 +281,15 @@ async def review(session=None, complete=None):
         lo, hi = tune.BOUNDS[key]
         if isinstance(lo, int) and isinstance(hi, int):
             number = int(round(number))
+        current = tune.value(key, None)
+        if tool_rules()["hostile"] and current is not None:
+            current_n = float(current)
+            if key == "entry_score" and number < current_n:
+                continue
+            if key == "max_change_5m" and number > current_n:
+                continue
+            if key == "min_sources" and number < current_n:
+                continue
         data = tune._load()
         tune._set(data, key, number, "eye review")
         data["changes"] = data["changes"][:100]
@@ -666,6 +707,8 @@ async def grow(session=None):
     market = await _read_market(session)
     recent = _closed_rows()[-15:]
     did = _grow_once({r["id"] for r in improvements()}, recent, market)
+    if tool_rules()["late_copy"]:
+        did = did.rstrip() + " Web search says a smart-wallet copy arrives late, so those wallets do not add score."
     add_note("web", market["text"], "dexscreener")
     add_note("trades", did, "own trades")
     briefed = [a.get("name") for a in (_load().get("assistants") or []) if a.get("last")]
