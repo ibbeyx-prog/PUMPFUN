@@ -100,7 +100,7 @@ def _parse_json(text):
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("no json")
-    return json.loads(raw[start:end + 1])
+    return json.loads(raw[start:end + 1], strict=False)
 
 
 def _injected(blob, key, value):
