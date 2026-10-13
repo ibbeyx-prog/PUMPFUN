@@ -135,6 +135,8 @@ def test_record_scan():
     report = lab.build_report(store)
     assert report["sample"] == "early"
     assert len(report["books"]) == 10
+    assert [row["size_usd"] for row in report["tickets"]] == [5.5, 8.0, 12.0]
+    assert [row["id"] for row in report["baselines"]] == ["hold-sol", "buy-every-name"]
     assert report["readiness"]["ready"] is False
 
 

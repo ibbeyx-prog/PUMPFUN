@@ -318,11 +318,16 @@ async def api_summary(request):
     tips = eye.improvements(rows)
     open_pos = []
     for mint, p in (ENG.pos if ENG else {}).items():
+        size_sol = float(p.get("size_sol") or 0)
+        ticket = size_sol * float(sol_px or 0)
         item = {"mint": mint, "symbol": p.get("symbol") or "",
-                "wallet": p["wallet"], "entry": p["entry"],
+                "wallet": p["wallet"], "source": p.get("wallet") or "",
+                "entry": p["entry"],
                 "left": p["left"], "tier": p["tier"],
                 "x": p.get("last_x"), "age_min": (time.time() - p["t0"]) / 60,
-                "pnl": p["pnl"]}
+                "pnl": p["pnl"],
+                "size_usd": round(ticket, 2),
+                "cost_usd": ct.round_trip_cost_usd(ticket, p.get("liq_usd"))}
         item["advice"] = advise_open(item, lesson)
         item["eye"] = eye.for_open(item, tips)
         open_pos.append(item)
@@ -370,6 +375,7 @@ async def api_trades(request):
     out = []
     for r in rows[-limit:][::-1]:
         item = dict(r)
+        item["source"] = item.get("wallet") or ""
         tip = eye.for_trade(item, tips)
         if tip:
             item["eye"] = tip

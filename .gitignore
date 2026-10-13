@@ -1,5 +1,6 @@
 node_modules
 dist
+backups/
 trades.csv
 wallets.json
 state.json

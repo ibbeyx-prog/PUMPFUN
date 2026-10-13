@@ -14,7 +14,16 @@ Paper Scanner is a single-operator Solana meme-coin desk. It scans public feeds,
 - Until 30 closes, Eye sizes a fixed $5.50, or $5 when free cash is between $5 and $5.50. After 30 closes, size follows the recent win rate. Free cash under $4, or a computed size under $4, skips the buy.
 - When the flat wallet cannot fund a buy above the fee reserve, and the current run has at least one close, Eye refills the paper bank to $50 and keeps the current preset. A bust does not advance the grind index.
 - A strategy locks only when the current run has at least 50 closes, the mean return per trade is above 0, and the 95% bootstrap interval’s lower bound is above 0, after the harsh fill costs. Locked rules are not loosened or replaced. The lab may name a shadow-book winner. The desk does not adopt it by itself.
+- The reserve is $5. A config value outside $3–$5 is clamped into that band before sizing. The running book stays at $5.
 - The dashboard API requires `Authorization: Bearer <DASH_TOKEN>` when that variable is set. The token is stored in the browser as `dash_token`. It is not a user account.
+
+Three sample gates, each unlocking a different action:
+
+| Closes | Unlocks |
+| --- | --- |
+| 30 | Win-rate sizing, and rule review other than a chase-cap tightening |
+| 50 sized | Strategy lock, when the mean return and the 95% interval are above 0 |
+| 100 on the lab `desk-ladder` book, over 14 days | Live queueing, and only with the interval and percentile checks in section 6.5 |
 - Secrets (`HELIUS_API_KEY`, `DASH_TOKEN`, `FOMO_API_KEY`, `BIRDEYE_API_KEY`, `ANTHROPIC_API_KEY`, `BUBBLEMAPS_API_KEY`, spend-lock hash and salt) are environment or gitignored files. They are never returned by the API and never written into these documents.
 
 ## 2. Roles
@@ -188,10 +197,10 @@ Slide-over. History is the last 40 messages, capped at 80 on disk. The operator 
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| time | datetime string `YYYY-MM-DD HH:MM:SS` | Local time of the process |
+| time | datetime string | New rows are UTC `YYYY-MM-DDTHH:MM:SSZ`. Older rows are local `YYYY-MM-DD HH:MM:SS`. Readers accept both |
 | event | enum | `BUY`, `SELL`, `CLOSED`, `SKIP`, `RESET` |
 | mint | string | Solana mint. Empty on `RESET` |
-| wallet | string | Source label such as `gmgn+dexscreener`, or `paper` on reset |
+| wallet | string | Source label such as `gmgn+dexscreener`, or `paper` on reset. The column name stays `wallet` in `trades.csv`. The API also returns it as `source` |
 | price_sol | number | Fill price in SOL |
 | x | number | Multiple versus entry. 0 on buys and skips |
 | sol_pnl | number | SOL result for this row |
@@ -427,6 +436,8 @@ On each staff pass, Vet, Scan watch, Scribe, and Risk each write one note if the
 The lab is a separate process. It reads the desk’s candidate and trade endpoints. It does not send orders, and it does not write the desk’s files or keys. It stores hits, price episodes, and a copy of desk trades, then scores shadow books including `desk-ladder` and `desk-runner`.
 
 `readiness.ready` is true only when `desk-ladder` has at least 100 closes, the episode span is at least 14 days, the confidence-interval low is above 0, and the random percentile is at least 90. The desk reads that report from `LAB_URL` with `LAB_KEY` about every 10 minutes. If either variable is missing, or the report fails, live queueing stays closed. Desk PnL is not the live gate.
+
+The lab report already includes outcome tables by decision, score bucket, source count, and skip reason, plus a post-mortem of losing desk closes tagged rug, gave back gains, slow bleed, or sold too early. It also scores the desk ladder at $5.50, $8, and $12, and prints a hold-SOL baseline and a buy-every-tracked-name baseline.
 
 ## 7. Interfaces
 

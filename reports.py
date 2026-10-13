@@ -6,6 +6,9 @@ import csv
 import json
 import os
 import time
+from datetime import datetime, timezone
+
+import deskio
 
 DATA = os.getenv("DATA_DIR", ".")
 PATH = os.path.join(DATA, "reports.json")
@@ -13,14 +16,11 @@ DAY = 24 * 3600
 
 
 def _parse(text):
-    try:
-        return time.mktime(time.strptime(text, "%Y-%m-%d %H:%M:%S"))
-    except (TypeError, ValueError):
-        return None
+    return deskio.parse_stamp(text)
 
 
 def _fmt(ts):
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 def _load():
@@ -38,8 +38,7 @@ def _load():
 
 def _save(data):
     os.makedirs(DATA, exist_ok=True)
-    with open(PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    deskio.write_json(PATH, data)
 
 
 def _rows():

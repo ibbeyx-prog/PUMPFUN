@@ -6,6 +6,8 @@ import json
 import os
 import time
 
+import deskio
+
 DATA = os.getenv("DATA_DIR", ".")
 PATH = os.path.join(DATA, "study.json")
 
@@ -131,7 +133,7 @@ def observe(rows):
         "A paper buy still needs the score and a real SOL price."
     )
     data = {
-        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "updated": deskio.stamp(),
         "note": note,
         "tape": {
             "names": len(rows),
@@ -141,9 +143,7 @@ def observe(rows):
             "single": single,
         },
     }
-    os.makedirs(DATA, exist_ok=True)
-    with open(PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    deskio.write_json(PATH, data)
     return data
 
 

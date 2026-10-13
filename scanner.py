@@ -15,6 +15,7 @@ import aiohttp
 
 import checks
 import copytrader as ct
+import deskio
 import eye
 import skills
 import tune
@@ -510,9 +511,8 @@ def bought_recently(mint):
         for row in csv.DictReader(f):
             if row.get("mint") != mint or row.get("event") != "BUY":
                 continue
-            try:
-                ts = time.mktime(time.strptime(row["time"], "%Y-%m-%d %H:%M:%S"))
-            except (KeyError, ValueError):
+            ts = deskio.parse_stamp(row.get("time"))
+            if ts is None:
                 continue
             if now - ts < cool:
                 return True
@@ -593,6 +593,7 @@ async def scan_once(session):
 
 async def scan_loop(eng, session, status):
     while True:
+        deskio.backup_book(ct.DATA)
         tune.review()
         eye.tend_wallet(eng)
         eye.choose_trade_usd()

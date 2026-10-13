@@ -2,7 +2,7 @@
 
 The running app stores one book as files in `DATA_DIR`: `trades.csv`, `state.json`, `bank.json`, `eye_knowledge.json`, `agent_tune.json`, `live_state.json`, `reports.json`, `chat.json`, `wallets.json`, and `study.json`. This schema is the relational equivalent. It is one deployment, one paper book, and one operator. Do not store API keys, the dashboard token, or the spend-lock PIN in these tables. Those stay in a secret manager. The lock is stored only as salt and hash.
 
-Types below are PostgreSQL. Money that is SOL or a ratio uses `numeric`. USD amounts that are displayed to cents can use `numeric(12,2)`. Timestamps are `timestamptz`. The current process writes local clock strings; a database should store UTC and format for the screen.
+Types below are PostgreSQL. Money that is SOL or a ratio uses `numeric`. USD amounts that are displayed to cents can use `numeric(12,2)`. Timestamps are `timestamptz` in UTC. New desk rows are written as UTC `YYYY-MM-DDTHH:MM:SSZ`. Older ledger rows are local `YYYY-MM-DD HH:MM:SS` and must still parse. The screen converts either form for display.
 
 ## 1. Operator and secrets
 
@@ -37,7 +37,7 @@ create table secret_ref (
 create table book_config (
   id                          smallint primary key default 1 check (id = 1),
   budget_usd                  numeric(12,2) not null default 50,
-  trade_usd                   numeric(12,2) not null default 5,
+  trade_usd                   numeric(12,2) not null default 5.50,
   reserve_usd                 numeric(12,2) not null default 5,
   one_trade_per_coin          boolean not null default true,
   size_sol                    numeric(18,8) not null default 0.1,
@@ -57,7 +57,7 @@ create table book_config (
   follow_wallet_sells         boolean not null default true,
   price_poll_sec              integer not null default 3,
   scan_sec                    integer not null default 45,
-  entry_score                 integer not null default 60,
+  entry_score                 integer not null default 70,
   max_new_entries_per_scan    integer not null default 1,
   entry_cooldown_min          integer not null default 180,
   min_liquidity_usd           numeric(14,2) not null default 8000,
@@ -83,7 +83,7 @@ create table ladder_tier (
 
 Seed `ladder_tier` with `(1, 2.0, 0.40)`, `(2, 3.5, 0.30)`, `(3, 5.0, 1.00)`.
 
-`budget_usd`, `trade_usd`, `reserve_usd`, `one_trade_per_coin`, and `size_sol` are locked against Eye's model review. `trade_usd` is overwritten by Eye's sizer, not by that review. `fee_sol` is the legacy flat fee. The running fill uses `fee_pct` plus `flat_fee_usd`, and `sim_slippage` plus `slip_impact` against pool liquidity, capped by `slip_cap`. `price_poll_sec` in config is not the position poll. Open positions use `position_poll_sec`.
+`budget_usd`, `trade_usd`, `reserve_usd`, `one_trade_per_coin`, and `size_sol` are locked against Eye's model review. `trade_usd` defaults to 5.50 and is overwritten by Eye's sizer on every scan. `entry_score` defaults to 70, matching grind preset 1. `fee_sol` and `price_poll_sec` are deprecated: the running fill uses `fee_pct` plus `flat_fee_usd`, and open positions use `position_poll_sec`. Slippage is `sim_slippage` plus `slip_impact` against pool liquidity, capped by `slip_cap`. The reserve stored here is 5. Sizing clamps any other value into $3–$5, so the running book stays at $5.
 
 ## 3. Bank, runs, and ledger
 
