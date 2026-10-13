@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import PhantomLink from "./Phantom.jsx";
+import EyeDesk, { EyeCrew } from "./EyeDesk.jsx";
 
 const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s);
 const usd = (n) => {
@@ -25,6 +26,18 @@ const solToUsd = (solAmount, px) => {
   return n * price;
 };
 const tone = (n) => (n > 0 ? "text-emerald-300" : n < 0 ? "text-rose-300" : "text-slate-400");
+const bubbleMapUrl = (c) => {
+  const raw = c.bubble_url || `https://v2.bubblemaps.io/map?address=${c.mint}&chain=solana`;
+  try {
+    const url = new URL(raw);
+    const chain = url.searchParams.get("chain");
+    if (!chain || chain === "sol") url.searchParams.set("chain", "solana");
+    if (!url.searchParams.get("address") && c.mint) url.searchParams.set("address", c.mint);
+    return url.toString();
+  } catch {
+    return raw;
+  }
+};
 const adviceTone = (label) =>
   ["Take", "Hold", "Sell", "Let winners run", "Keep the book"].includes(label) ? "text-emerald-300" : ["Cut", "Pass", "Skip", "Cut fades", "Skip one source"].includes(label) ? "text-rose-300" : "text-amber-200";
 
@@ -280,11 +293,7 @@ export default function App() {
           ))}
         </section>
 
-        {sum.desk?.may_hire && (
-          <div className="text-xs text-slate-500">
-            Assisting Eye{(sum.desk?.hired || []).length ? `: ${(sum.desk.hired || []).join(", ")}` : ""}. They brief Eye before it decides.
-          </div>
-        )}
+        <EyeCrew eye={eye} />
 
         <section className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-4">
           <div className="mb-3 text-sm font-medium text-slate-200">Meme-coin feeds</div>
@@ -403,7 +412,7 @@ export default function App() {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-xs">
-                      <a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={c.bubble_url || `https://v2.bubblemaps.io/map?address=${c.mint}&chain=sol`}>
+                      <a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={bubbleMapUrl(c)}>
                         {c.bubble_cluster != null ? `${Math.round(c.bubble_cluster * 100)}%` : (c.bubble_label || "map")}
                       </a>
                     </td>
@@ -515,6 +524,7 @@ export default function App() {
 
         {tab === "agent" && (
           <div className="space-y-4">
+            <EyeDesk eye={eye} phase={sum.status?.phase} />
             {sum.lesson && (
               <div className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 px-4 py-3 text-sm text-slate-300">
                 <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Agent read</div>
@@ -541,24 +551,6 @@ export default function App() {
             </Shell>
 
             <Shell title="Eye">
-              <div className="px-4 py-3 text-sm text-slate-300">
-                Eye's assistants work on its behalf. Each one reads the scan or the book and briefs Eye before Eye changes a rule.
-              </div>
-              {eye.strategy && <div className="px-4 pb-3 text-sm text-slate-200">{eye.strategy}</div>}
-              <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                {eye.may_hire ? "Briefs for Eye" : "Hiring is off"}
-              </div>
-              <div className="divide-y divide-white/[0.05]">
-                {(eye.assistants || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">No assistants yet. Eye hires them on its next pass.</div>}
-                {(eye.assistants || []).map((a) => (
-                  <div key={a.name} className="px-4 py-3 text-sm">
-                    <div className="text-slate-200">{a.name}</div>
-                    <div className="mt-1 text-xs text-slate-500">{a.job}</div>
-                    {a.last && <div className="mt-2 text-slate-300">{a.last}</div>}
-                  </div>
-                ))}
-              </div>
-              {eye.market && <div className="px-4 pb-3 text-xs text-slate-500">{eye.market}</div>}
               <div className="px-4 py-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">How Eye is growing</div>
               <div className="divide-y divide-white/[0.05]">
                 {(eye.growth || []).length === 0 && <div className="px-4 py-4 text-sm text-slate-500">The first growth pass runs after Eye checks the public market.</div>}
@@ -612,7 +604,7 @@ export default function App() {
                   <tr>{["Time", "Change", "From", "To", "Why"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody>
-                  {(sum.agent?.changes || []).length === 0 && <Empty cols={5}>No edits yet. The agent changes rules after 5 closed trades.</Empty>}
+                  {(sum.agent?.changes || []).length === 0 && <Empty cols={5}>No edits yet. Eye waits for 30 closed trades before it changes a rule.</Empty>}
                   {(sum.agent?.changes || []).map((c, i) => (
                     <tr key={i} className="border-t border-white/[0.05]">
                       <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">{(c.time || "").slice(5, 16)}</td>

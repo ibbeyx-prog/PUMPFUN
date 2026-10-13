@@ -1,6 +1,7 @@
 """
 RugCheck and Bubblemaps reads for paper entries. No orders are sent.
-Bubblemaps cluster data needs BUBBLEMAPS_API_KEY. RugCheck does not.
+The public map is https://v2.bubblemaps.io/map?address=<mint>&chain=solana.
+Cluster scores from that map need BUBBLEMAPS_API_KEY. RugCheck does not.
 """
 import os
 import time
@@ -12,8 +13,10 @@ BUBBLE = "https://api.bubblemaps.io/v0/tokens/metrics/solana"
 MAP = "https://v2.bubblemaps.io/map"
 
 
-def map_url(address, chain="sol"):
-    """Same shape as https://v2.bubblemaps.io/map?address=...&chain=bsc, for Solana."""
+def map_url(address, chain="solana"):
+    """Public map. address is the coin mint. chain is the launch chain, solana for pump.fun."""
+    if chain in ("sol", "", None):
+        chain = "solana"
     return f"{MAP}?address={address}&chain={chain}"
 
 # RugCheck normalised score. Higher means more risk. A clean pump coin sits near 1.

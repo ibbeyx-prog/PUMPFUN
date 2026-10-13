@@ -828,8 +828,6 @@ async def grow(session=None):
     return _load()
 
 
-def public():
-    data = _load()
 def _blocked_name(name):
     words = re.split(r"[^a-z0-9]+", str(name or "").lower())
     return any(word in DENIED_NAMES for word in words)
@@ -883,10 +881,19 @@ def _assist_text(agent):
         rug = sources.get("rugcheck") or {}
         bubble = sources.get("bubblemap") or {}
         rug_txt = "live" if rug.get("ok") else "not reporting yet"
+        mapped = [c.get("symbol") or "a coin" for c in names if c.get("decision") != "skip"][:3]
         if bubble.get("ok"):
             bubble_txt = "I can read holder clusters."
+        elif mapped:
+            bubble_txt = (
+                f"I opened the public Bubblemaps map for {', '.join(mapped)}, "
+                "address and chain solana. Cluster scores still need a Bubblemaps key."
+            )
         else:
-            bubble_txt = "I cannot check holder clusters until a Bubblemaps key is set."
+            bubble_txt = (
+                "I open the public Bubblemaps map for each coin, address and chain solana. "
+                "Cluster scores still need a Bubblemaps key."
+            )
         return f"Eye, I checked the feeds for you. RugCheck is {rug_txt}. {bubble_txt}"
     if "read_scan" in powers:
         enters = [c for c in names if c.get("decision") == "enter"]
