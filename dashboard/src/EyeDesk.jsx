@@ -55,6 +55,98 @@ function CrewCard({ agent }) {
   );
 }
 
+const STATIONS = {
+  Vet: { x: 18, y: 62, color: "#34d399" },
+  "Scan watch": { x: 38, y: 78, color: "#38bdf8" },
+  Scribe: { x: 62, y: 78, color: "#fbbf24" },
+  Risk: { x: 82, y: 62, color: "#fb7185" },
+};
+
+export function EyeFloor({ eye, phase, pick }) {
+  const staff = staffOf(eye);
+  const briefing = staff.filter((agent) => agent.working).length;
+  const decision = eye?.growth?.[0]?.did || eye?.strategy || "Eye is waiting for the next pass.";
+  return (
+    <section className="overflow-hidden rounded-2xl border border-fuchsia-400/45 bg-[#080910] shadow-[inset_0_0_0_1px_rgba(232,121,249,0.18)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-fuchsia-400/25 px-4 py-2">
+        <div className="text-[11px] uppercase tracking-[0.18em] text-fuchsia-200">Eye floor</div>
+        <div className="text-[11px] text-slate-400">
+          {phase || "waiting for a scan"} · last pick {pick || "none"} · {briefing} briefing
+        </div>
+      </div>
+      <div className="relative h-[440px]">
+        <div className="pointer-events-none absolute inset-x-6 bottom-8 top-28 origin-bottom rounded-xl border border-fuchsia-400/15 bg-[linear-gradient(rgba(232,121,249,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(232,121,249,0.07)_1px,transparent_1px)] bg-[size:32px_32px] [transform:perspective(680px)_rotateX(58deg)]" />
+        <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {staff.map((agent) => {
+            const spot = STATIONS[agent.name];
+            return (
+              <line
+                key={agent.name}
+                x1={spot.x}
+                y1={spot.y}
+                x2="50"
+                y2="30"
+                stroke={spot.color}
+                strokeWidth="0.35"
+                strokeDasharray={agent.working ? "1.4 1.1" : "0.2 1.6"}
+                className={agent.working ? "animate-eye-link" : ""}
+                opacity={agent.working ? 0.95 : 0.35}
+              />
+            );
+          })}
+        </svg>
+        <div className="absolute left-1/2 top-[18%] w-44 -translate-x-1/2 -translate-y-1/2">
+          <div className="rounded-xl border border-amber-300/40 bg-amber-400/10 px-3 py-2 text-center shadow-[0_0_24px_rgba(251,191,36,0.18)]">
+            <div className="mx-auto mb-1 grid h-8 w-8 place-items-center rounded-full bg-amber-300 text-xs font-semibold text-slate-950">E</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-amber-100">Eye · boss</div>
+            <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-slate-200">{decision}</p>
+          </div>
+        </div>
+        {staff.map((agent) => {
+          const spot = STATIONS[agent.name];
+          return (
+            <div
+              key={agent.name}
+              className="absolute w-32 -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
+            >
+              <div className="rounded-xl border border-white/10 bg-[#10141c]/95 px-2.5 py-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-semibold text-slate-950 ${agent.working ? "animate-pulse" : ""}`}
+                    style={{ background: spot.color }}
+                  >
+                    {agent.name.slice(0, 1)}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="truncate text-[11px] font-medium text-slate-100">{agent.name}</div>
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: spot.color }}>
+                      {agent.working ? "Briefing" : "Waiting"}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 flex h-5 items-end gap-0.5">
+                  {[0.35, 0.6, 0.45, 0.8, 0.55].map((h, i) => (
+                    <span
+                      key={i}
+                      className="w-full rounded-sm"
+                      style={{
+                        height: `${h * 100}%`,
+                        background: spot.color,
+                        opacity: agent.working ? 0.85 : 0.3,
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function EyeCrew({ eye }) {
   const staff = staffOf(eye);
   const briefing = staff.filter((agent) => agent.working).length;

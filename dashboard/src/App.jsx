@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import PhantomLink from "./Phantom.jsx";
-import EyeDesk, { EyeCrew } from "./EyeDesk.jsx";
+import EyeDesk, { EyeFloor } from "./EyeDesk.jsx";
 
 const short = (s) => (!s ? "" : s.length > 20 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s);
 const usd = (n) => {
@@ -293,7 +293,11 @@ export default function App() {
           ))}
         </section>
 
-        <EyeCrew eye={eye} />
+        <EyeFloor
+          eye={eye}
+          phase={sum.status?.phase}
+          pick={(sum.desk?.roles || []).find((role) => role.id === "chief")?.value}
+        />
 
         <section className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 p-4">
           <div className="mb-3 text-sm font-medium text-slate-200">Meme-coin feeds</div>

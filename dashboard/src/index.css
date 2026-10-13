@@ -14,3 +14,11 @@ body {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
+
+@keyframes eye-link {
+  to { stroke-dashoffset: -12; }
+}
+
+.animate-eye-link {
+  animation: eye-link 1.1s linear infinite;
+}
