@@ -114,34 +114,52 @@ async def _anthropic(session, prompt, use_search):
     key = os.getenv("ANTHROPIC_API_KEY") or ""
     if not key:
         raise RuntimeError("no anthropic key")
-    body = {
-        "model": os.getenv("EYE_MODEL", "claude-sonnet-4-5"),
-        "max_tokens": 1200,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if use_search:
-        body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}]
+    messages = [{"role": "user", "content": prompt}]
     own = session is None
     if own:
         session = aiohttp.ClientSession()
+    data = {}
     try:
-        async with session.post(
-            "https://api.anthropic.com/v1/messages",
-            json=body,
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-        ) as resp:
-            data = await resp.json(content_type=None)
-            if resp.status != 200:
-                raise RuntimeError(f"anthropic http {resp.status}")
+        for _ in range(3):
+            body = {
+                "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
+                "max_tokens": 4000 if use_search else 1200,
+                "messages": messages,
+            }
+            if use_search:
+                body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}]
+            async with session.post(
+                "https://api.anthropic.com/v1/messages",
+                json=body,
+                headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=90),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    err = data.get("error") if isinstance(data, dict) else None
+                    detail = ""
+                    if isinstance(err, dict):
+                        detail = str(err.get("message") or "")[:160]
+                    raise RuntimeError(f"anthropic http {resp.status} {detail}".strip())
+            if data.get("stop_reason") != "pause_turn":
+                break
+            messages.append({"role": "assistant", "content": data.get("content") or []})
+            messages.append({"role": "user", "content": "Continue and reply with the JSON only."})
     finally:
         if own:
             await session.close()
-    texts = [b.get("text") or "" for b in (data.get("content") or []) if b.get("type") == "text"]
-    return "\n".join(texts)
+    content = data.get("content") or []
+    texts = [b.get("text") or "" for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    joined = "\n".join(texts).strip()
+    if "{" not in joined:
+        types = [b.get("type") for b in content if isinstance(b, dict)]
+        head = " ".join(joined.split())[:80]
+        print(f"anthropic no-json stop={data.get('stop_reason')} types={types} chars={len(joined)} head={head!r}")
+    return joined
 
 
 def _research_prompt():
@@ -203,7 +221,7 @@ async def research(session=None, complete=None):
         data = _load()
         data["next_research"] = time.time() + 3600
         _save(data)
-        print("eye research failed:", type(e).__name__)
+        print("eye research failed:", type(e).__name__, str(e)[:120])
     return _load()
 
 
@@ -216,7 +234,7 @@ async def review(session=None, complete=None):
         raw = await complete(prompt) if complete else await _anthropic(session, prompt, False)
         parsed = _parse_json(raw)
     except Exception as e:
-        print("eye review failed:", type(e).__name__)
+        print("eye review failed:", type(e).__name__, str(e)[:120])
         return _load()
     blob = "\n".join(n.get("text") or "" for n in knowledge)
     for key, value in (parsed.get("settings") or {}).items():
