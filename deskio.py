@@ -54,7 +54,7 @@ def backup_book(data_dir):
     names = (
         "trades.csv", "state.json", "bank.json", "eye_knowledge.json",
         "agent_tune.json", "live_state.json", "reports.json", "wallets.json",
-        "study.json", "chat.json",
+        "study.json", "chat.json", "quotes.csv",
     )
     for name in names:
         src = os.path.join(data_dir, name)

@@ -302,7 +302,7 @@ create table grind_preset (
 );
 ```
 
-Seed `grind_preset` with the four rows in the requirements. A refill must not increment `grind_index`. Application code must still clamp writes to the bounds in section 4.6 of the requirements, and must reject locked-field names. `tune_value` writes from review wait until the open run has 30 `CLOSED` rows, except a chase-cap tightening.
+Seed `grind_preset` with the four rows in the requirements. A refill must not increment `grind_index`. Application code must still clamp writes to the bounds in section 4.6 of the requirements, and must reject locked-field names. `tune_value` writes from review wait until the open run has 100 `CLOSED` rows, except a chase-cap tightening.
 
 ## 6. Live wallet
 
@@ -344,6 +344,34 @@ create table live_position (
 ```
 
 `lock_salt` and `lock_hash` are excluded from every API view. `phantom_address` is the public key only. `signature` is the chain signature returned by the browser. An empty signature cannot set `sent`. `sent` also requires `getSignatureStatuses` confirmed or finalized, and `getTransaction` showing the linked wallet gained the mint on a buy or spent it on a sell. A confirmed buy inserts or updates `live_position`. A confirmed sell reduces `left_frac`.
+
+Planned, not built (gap report G1 and G4). Add these before live money:
+
+```sql
+create table live_audit (
+  id        bigint generated always as identity primary key,
+  at        timestamptz not null default now(),
+  action    text not null check (action in ('connect','allow','halt','resume','lock_set','lock_change','lock_fail')),
+  actor     text not null check (actor in ('operator','eye','risk','system')),
+  reason    text not null default '',
+  outcome   text not null default ''
+);
+
+create table fill_quote (
+  id              bigint generated always as identity primary key,
+  at              timestamptz not null default now(),
+  mint            text not null,
+  side            text not null check (side in ('buy','sell')),
+  usd             numeric(12,2) not null,
+  paper_price_sol numeric(24,12),
+  quote_price_sol numeric(24,12),
+  price_impact    numeric(8,4),
+  live_order_id   bigint references live_order(id),
+  fill_price_sol  numeric(24,12)
+);
+```
+
+`fill_quote` holds a Jupiter quote beside each paper fill, and the confirmed fill once live. A buy whose `price_impact` is over 0.05 is refused. `live_audit` never stores the PIN or any key.
 
 ## 7. Reports, chat, wallets, study
 
@@ -416,7 +444,11 @@ Chat retention is the latest 80 messages. Wallet rows are replaced on each ranki
 | `chat.json` | `chat_message` |
 | `wallets.json` | `tracked_wallet` |
 | `study.json` | `study_snapshot` |
+| `quotes.csv` | `paper_quote` |
 | `config.json` non-secret keys | `book_config`, `ladder_tier` |
+| `backups/YYYY-MM-DD/` | None. A nightly database dump replaces it |
+
+Files are written atomically today (temp file, then rename), and copied once per UTC day into `backups/`. A database port should keep both guarantees with transactions and a scheduled dump that is restored at least once as a test.
 
 ## 9. Integrity rules the application must keep
 
@@ -449,7 +481,8 @@ create table lab_hit (
   change_5m   numeric(10,2),
   price_sol   numeric(24,12),
   age_min     numeric(10,2),
-  rug_label   text not null default ''
+  rug_label   text not null default '',
+  features    jsonb not null default '{}'
 );
 
 create table lab_episode (
@@ -467,6 +500,8 @@ create table lab_episode (
   change_5m   numeric(10,2),
   age_min     numeric(10,2),
   rug_label   text not null default '',
+  features    jsonb not null default '{}',
+  last_priced timestamptz,
   done        boolean not null default false
 );
 
@@ -495,4 +530,25 @@ create table lab_meta (
 );
 ```
 
-Shadow-book results, including `desk-ladder` and `desk-runner`, are computed from episodes and prices. They are a report, not rows the desk writes back. The live gate reads `desk-ladder` closes, the span from the earliest to latest `started_at`, the interval low, and the random percentile.
+Research-book results (twenty ids `{entry}-{exit}`, entries strict, desk, loose, looser, filters and exits ladder, cut, runner, wide), `desk-ladder-real`, nine ticket rows (`{entry}-ladder-5.5`, `-8`, `-12` for the top three entry rules), and the `hold-sol` and `buy-every-name` baselines are computed from episodes and prices. They are a report, not rows the desk writes back. The live gate reads `desk-ladder-real` closes, the span from the earliest to latest `started_at`, the interval low, and the random percentile.
+
+`lab_meta` keys in use: `last_scanned_at`; `frozen_picks`, JSON `{at, picks, tried, explore}` written once, four hours after `LAB_FREEZE_AT`, and never rewritten; `desk_quotes`, the desk's `/api/quotes` summary without rows plus `fetched_at`.
+
+Desk quote log, `DATA_DIR/quotes.csv` today (included in the daily backup):
+
+```sql
+create table paper_quote (
+  id          bigint generated always as identity primary key,
+  at          timestamptz not null,
+  side        text not null check (side in ('buy','sell')),
+  mint        text not null,
+  usd         numeric(12,2),
+  paper_px    numeric(24,12),            -- SOL per token after paper slippage, before the 1% fee
+  quote_px    numeric(24,12),            -- SOL per token from the Jupiter quote
+  gap         numeric(10,6),             -- positive means the real route was worse than paper
+  impact      numeric(12,8),
+  route       text not null default '',
+  status      text not null check (status in ('ok','no_route','error')),
+  error       text not null default ''
+);
+```

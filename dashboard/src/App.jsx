@@ -623,7 +623,7 @@ export default function App() {
                   <tr>{["Time", "Change", "From", "To", "Why"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody>
-                  {(sum.agent?.changes || []).length === 0 && <Empty cols={5}>No edits yet. Eye waits for 30 closed trades before it changes a rule.</Empty>}
+                  {(sum.agent?.changes || []).length === 0 && <Empty cols={5}>No edits yet. Eye waits for 100 closed trades before it changes a rule.</Empty>}
                   {(sum.agent?.changes || []).map((c, i) => (
                     <tr key={i} className="border-t border-white/[0.05]">
                       <td className="num whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">{when(c.time)}</td>

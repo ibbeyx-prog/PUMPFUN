@@ -35,6 +35,7 @@ import copytrader as ct
 import chat
 import eye
 import live
+import quotes
 import reports
 import scanner
 import skills
@@ -401,6 +402,10 @@ async def api_candidates(request):
     })
 
 
+async def api_quotes(request):
+    return web.json_response(quotes.summary(read_trades()))
+
+
 def chat_context():
     rows = eye.current_rows(read_trades())
     lesson = lessons(rows)
@@ -666,6 +671,7 @@ def make_app():
         web.get("/api/trades", api_trades),
         web.get("/api/wallets", api_wallets),
         web.get("/api/candidates", api_candidates),
+        web.get("/api/quotes", api_quotes),
         web.get("/api/eye", api_eye),
         web.get("/api/chat", api_chat_get),
         web.post("/api/chat", api_chat_post),
