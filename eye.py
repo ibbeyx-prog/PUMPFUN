@@ -716,7 +716,8 @@ def tend_wallet(eng):
     equity = eng.equity_usd(px)
     if equity is None or not _run_closes():
         return ""
-    if equity - eng.fee_reserve_usd() >= 4:
+    # Refill on the sizing rule itself. Under 30 closes a trade needs $5 free, so $4 to $5 would never trade.
+    if choose_trade_usd() >= 4:
         return ""
     if _profitable(_run_closes()):
         if not tune.locked():
