@@ -94,6 +94,46 @@ Acceptance: the floor sits under the eight role cards. A station shows Briefing 
 
 Priority: now.
 
+### OP-12 See what a trade costs
+
+As an operator, I want the round-trip cost of each open position in dollars, so that I can see how much of a small win the fees and slippage take.
+
+Acceptance: the Book tab has a Cost column. A $5.50 ticket in a $10,000 pool shows $0.85. The Closed PnL tile and the equity panel also show SOL, because USD moves with the SOL price.
+
+Priority: now.
+
+### OP-13 Notice when the desk stops
+
+As an operator, I want a warning when the scan stalls or a feed is down, so that a quiet book is not mistaken for a calm market.
+
+Acceptance: a warning shows above the tabs when the last scan is more than 5 minutes old, or any feed is `down`. It names the minutes and the feeds, and it clears on the next good scan. A paper-mode halt does not trigger it.
+
+Priority: now. An alert outside the page is OP-14.
+
+### OP-14 Get told when something needs me
+
+As an operator, I want a push, Telegram, or email message when a sell order queues, the scan stalls, live trading halts, or the lab gate changes, so that a stop does not wait for me to open the page.
+
+Acceptance: a queued sell sends one message. A sell pending more than 5 minutes is marked stale and re-quoted. The message contains no token, PIN, or key.
+
+Priority: next. Required before live money (G2, G13).
+
+### OP-15 Trust the spend lock and the login
+
+As an operator, I want a slow lock hash, a longer code, and a limit on login guesses, so that a leaked file or an open URL cannot be brute-forced.
+
+Acceptance: the lock uses scrypt or Argon2. Live trading needs a code of 8 or more characters. An existing code still works once and is then re-hashed. Failed dashboard logins are rate-limited per IP. The site is HTTPS only.
+
+Priority: next. Required before live money (G3, G5).
+
+### OP-16 See who armed the wallet
+
+As an operator, I want a record of every Connect, Allow, Halt, Resume, and lock change, so that I can tell afterwards who did what.
+
+Acceptance: each action writes time, action, actor, reason, and outcome. The record has no secrets.
+
+Priority: next. Required before live money (G4).
+
 ## Eye
 
 ### EY-1 Size the next paper buy
@@ -276,6 +316,46 @@ Acceptance: the row counts closes, wins, buys, skips, fades, best, worst, and tu
 
 Priority: now.
 
+### EN-6 Never lose the book to a bad write
+
+As the paper engine, I want every save to be all-or-nothing and a daily copy of the book, so that one crash or a lost volume does not end the run history.
+
+Acceptance: JSON files are written to a temp file and renamed. The first scan of each UTC day copies the book files into `backups/<date>/` and writes `.ok`. `config.json` and `.env` are never copied. A restore from that folder has been tested once.
+
+Priority: now for the copy. Next for the tested restore.
+
+### EN-7 Write one clock
+
+As the paper engine, I want new rows in UTC, so that the desk, the reports, and the lab agree when the two services run in different timezones.
+
+Acceptance: new rows are `YYYY-MM-DDTHH:MM:SSZ`. Older local rows still parse for win rate, cooldown, and report windows. The screen shows both as `MM-DD HH:MM`.
+
+Priority: now.
+
+### EN-8 Check the paper fill against a real quote
+
+As the paper engine, I want a Jupiter quote logged beside each paper fill, so that the live gate does not rest on a cost model nobody measured.
+
+Acceptance: each paper fill stores the quote, price impact, and route, or `no_route`. Quote rows cover at least 95% of fills. The lab reports the median and p90 gap between quote and paper fill per side, and the no-route share. A buy whose quoted impact is over 5% is refused. Live opens only when that gap is under 3 percentage points. Live slippage is set from the quoted impact, not a fixed 300 bps.
+
+Priority: paper logging built (`quotes.py`, `/api/quotes`). The impact refusal and live slippage are next. Required before live money (G1, G6).
+
+### EN-10 Trade enough to be measured
+
+As the paper engine, I want the paper entry on the two-source rule (2 sources, score 65 or more, 5-minute move up to 60%), so that the desk-ladder book records trades every day instead of none.
+
+Acceptance: `tune.ensure_entry_rule()` applies it once and writes a change note. A locked strategy is left alone. The lab keeps the 3-source rule as the `strict` books.
+
+Priority: now.
+
+### EN-9 Ship every module
+
+As the paper engine, I want the deploy image to contain every module the server imports, so that a push to `main` does not take the desk down.
+
+Acceptance: a new Python file is added to the `COPY` line of the root `Dockerfile` in the same commit. A clean image starts without `ModuleNotFoundError`.
+
+Priority: now.
+
 ## Later, not a current role
 
 ### LA-1 Social feeds
@@ -308,7 +388,7 @@ Priority: now.
 
 ### LB-2 Keep live trading closed until the ladder book is real
 
-As the lab, I want one readiness flag for the `desk-ladder` book, so that the desk does not arm Phantom on a short or lucky sample.
+As the lab, I want one readiness flag for the `desk-ladder-real` book (the desk ladder with one entry per scan and at most five open), so that the desk does not arm Phantom on a short or lucky sample.
 
 Acceptance: ready requires at least 100 closes, a span of at least 14 days, an interval low above 0, and a random percentile of at least 90. Anything else, including a failed fetch, leaves the desk’s live queue closed. Desk equity is not an input.
 
@@ -321,3 +401,67 @@ As the lab, I want a `desk-runner` book that sells half at 2x and trails the res
 Acceptance: the runner is a shadow book only. The desk stays on the 5x ladder until that row beats it with an interval that excludes zero, and even then the switch is a manual copy onto the tune fields.
 
 Priority: next.
+
+### LB-4 Find the ticket size that survives costs
+
+As the lab, I want the desk ladder scored at $5.50, $8, and $12, so that the size that goes live is the one whose book held up after the flat fee.
+
+Acceptance: the report has a ticket-size block with n, total, mean, win rate, and verdict for each size. The desk does not change its size from this block by itself.
+
+Priority: now.
+
+### LB-5 Beat doing nothing
+
+As the lab, I want a hold-SOL baseline and a buy-every-tracked-name baseline, so that a shadow book is judged against something simple.
+
+Acceptance: both baselines print under the books. Neither counts as a book for the live gate.
+
+Priority: now. Tagging episodes with SOL trend and launch volume is next.
+
+### LB-6 Not crown a lucky book
+
+As the lab, I want each of twenty research books compared with the filters-only ladder on the same signals, picks frozen after an explore week, and only those picks judged on a confirm week, so that picking the best of twenty books does not overstate the edge.
+
+Acceptance: the report shows a paired bootstrap interval against `filters-ladder`. The top 3 by paired difference with 30 or more trades are frozen once, with the count of books tried. The confirm week scores only the frozen picks.
+
+Priority: now (G8).
+
+### LB-11 Say whether there is an edge
+
+As the operator, I want one weekly verdict, so that I know whether to keep going, change costs, or stop.
+
+Acceptance: Edge found needs a frozen pick with 50 or more confirm-week trades, an interval low above $0 per trade after quote-calibrated costs, and a mean above buy-every-name and hold-SOL. Positive but short, or an interval spanning zero, is Not yet (one more confirm week). Gross positive but net negative is Costs only. Otherwise No edge: stop the live plan, keep the lab as research, add no agents.
+
+Priority: now.
+
+### LB-8 Say where the money goes
+
+As the lab, I want each trade split into price move, stop gap, slippage, fee, and the $0.20, and a diagnosis of weak signal, costs, or exits, so that the next fix targets the real leak.
+
+Acceptance: the parts sum to each trade's PnL. The diagnosis lists its evidence, or says too little data.
+
+Priority: now.
+
+### LB-9 Learn the score from outcomes
+
+As the lab, I want the desk's signal features logged on every candidate and a simple model trained on them, so that hand-set points can be replaced only when data says so.
+
+Acceptance: the label is peaked 1.5X before a 35% drop, before costs. It waits for 100 positive examples and 500 labeled coins with features. Tests on an untouched final week. Says adopt only when the model's AUC is above 0.5 at its low bound and above the hand score. Adoption is by hand. After 500 coins with no model beating random and every book negative, the report says to stop adding agents.
+
+Priority: now for logging. The verdict needs about 500 coins collected after this change.
+
+### LB-10 Trade less in bad markets
+
+As the desk, I want to skip entries when the lab says the market is cold or the score bucket does not pay after costs, so that no trade is a valid action.
+
+Acceptance: only applies when `LAB_URL` and `LAB_KEY` are set. A pause needs 3 days of data and cold markets that lost more than warm ones. A bucket needs 100 coins. The skip note starts `lab:`.
+
+Priority: now. Off until the lab variables are set on the desk.
+
+### LB-7 Say what predicts a loss
+
+As the lab, I want outcomes by decision, score, source count, and skip reason, and each losing desk close tagged, so that the operator can see whether the score means anything.
+
+Acceptance: four outcome tables and the tags rug, gave back gains, slow bleed, and sold too early are in every report.
+
+Priority: now.

@@ -526,6 +526,11 @@ class Paper:
         self.log("BUY", mint, wallet, fill, note=f"{label}size {size_sol:.4f} SOL · ${usd:.2f} phantom paper")
         self.save()
         try:
+            import quotes
+            quotes.schedule_buy(mint, usd, float(size_sol), fill)
+        except Exception:
+            pass
+        try:
             import live
             live.queue_phantom(mint, symbol, usd)
         except Exception:
@@ -549,6 +554,12 @@ class Paper:
             self.bank["realized_sol"] = float(self.bank.get("realized_sol") or 0) + pnl
             self._save_bank()
         self.log("SELL", mint, p["wallet"], price, x, pnl, why)
+        try:
+            import quotes
+            if entry:
+                quotes.schedule_sell(mint, notional, size * frac / entry, price * (1 - slip))
+        except Exception:
+            pass
         try:
             import live
             live.queue_sell(mint, p.get("symbol") or "", frac, why)

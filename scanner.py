@@ -17,6 +17,7 @@ import checks
 import copytrader as ct
 import deskio
 import eye
+import live
 import skills
 import tune
 
@@ -80,6 +81,7 @@ def blank(mint):
         "age_min": None,
         "pump": False,
         "live": False,
+        "feat": {},
     }
 
 
@@ -194,6 +196,8 @@ async def from_pump(session, book):
             real_sol = num(coin.get("real_sol_reserves"), 0) / 1e9
             if sol and real_sol and not c["liq"]:
                 c["liq"] = real_sol * sol
+            if coin.get("creator"):
+                c["feat"].setdefault("creator", str(coin["creator"]))
             n += 1
     return n
 
@@ -237,6 +241,7 @@ async def from_dex(session, book):
         c["symbol"] = c["symbol"] or base.get("symbol") or ""
         c["name"] = c["name"] or base.get("name") or ""
         ch = pair.get("priceChange") or {}
+        c["feat"].setdefault("change_6h", num(ch.get("h6")))
         c["change_5m"] = c["change_5m"] if c["change_5m"] is not None else num(ch.get("m5"))
         c["change_1h"] = c["change_1h"] if c["change_1h"] is not None else num(ch.get("h1"))
         liq = num((pair.get("liquidity") or {}).get("usd"))
@@ -250,6 +255,13 @@ async def from_dex(session, book):
         created = num(pair.get("pairCreatedAt"))
         if c["age_min"] is None and created:
             c["age_min"] = age_min(created)
+        txns = pair.get("txns") or {}
+        vol = pair.get("volume") or {}
+        for window in ("m5", "h1"):
+            side = txns.get(window) or {}
+            c["feat"].setdefault(f"buys_{window}", num(side.get("buys")))
+            c["feat"].setdefault(f"sells_{window}", num(side.get("sells")))
+            c["feat"].setdefault(f"vol_{window}", num(vol.get(window)))
         if (mint or "").endswith("pump"):
             c["pump"] = True
     return len(uniq)
@@ -290,6 +302,16 @@ async def from_gmgn(session, book):
             c["rug"] = c["rug"] if c["rug"] is not None else num(row.get("rug_ratio"))
             c["bundler"] = c["bundler"] if c["bundler"] is not None else num(row.get("bundler_rate"))
             c["wash"] = c["wash"] or bool(row.get("is_wash_trading"))
+            for key, name in (
+                ("buys", f"gmgn_buys_{window}"), ("sells", f"gmgn_sells_{window}"),
+                ("volume", f"gmgn_vol_{window}"), ("top_10_holder_rate", "top10_rate"),
+                ("dev_team_hold_rate", "dev_hold_rate"), ("creator_balance_rate", "creator_hold_rate"),
+            ):
+                if num(row.get(key)) is not None:
+                    c["feat"].setdefault(name, num(row.get(key)))
+            creator = row.get("creator") or row.get("creator_address") or row.get("dev")
+            if isinstance(creator, str) and creator:
+                c["feat"].setdefault("creator", creator)
             c["price_sol"] = c["price_sol"] or None
             if c["age_min"] is None:
                 c["age_min"] = age_min(row.get("creation_timestamp"))
@@ -477,6 +499,74 @@ def decide(c):
     return score, decision, ", ".join(notes) or "watching"
 
 
+_SEEN = {}
+_SOL_HIST = []
+_LAB_SKIPPED = {}
+
+
+def _ratio(a, b):
+    if a is None or b is None:
+        return None
+    return round(a / b, 4) if b > 0 else (round(a, 4) if a else None)
+
+
+def sol_trend_1h():
+    """SOL price change over the last hour from this process's own scans. None until an hour has passed."""
+    now = time.time()
+    px = STATE.get("sol_usd")
+    if px:
+        _SOL_HIST.append((now, float(px)))
+    del _SOL_HIST[: max(0, len(_SOL_HIST) - 200)]
+    old = next((p for t, p in _SOL_HIST if now - t <= 3900), None)
+    if not old or _SOL_HIST[0][0] > now - 3300:
+        return None
+    return round(_SOL_HIST[-1][1] / old - 1, 4)
+
+
+def features(c, sol_trend=None):
+    """What was known at the signal, for the lab's learned score. Unique buyers per minute is not in these feeds."""
+    f = c.get("feat") or {}
+    now = time.time()
+    buys5 = f.get("buys_m5") if f.get("buys_m5") is not None else f.get("gmgn_buys_5m")
+    sells5 = f.get("sells_m5") if f.get("sells_m5") is not None else f.get("gmgn_sells_5m")
+    vol5 = f.get("vol_m5") if f.get("vol_m5") is not None else f.get("gmgn_vol_5m")
+    vol1h = f.get("vol_h1") if f.get("vol_h1") is not None else f.get("gmgn_vol_1h")
+    holders = c.get("holders")
+    growth = None
+    seen = _SEEN.get(c["mint"])
+    if holders is not None:
+        if seen and now - seen[0] >= 60 and seen[1]:
+            growth = round((holders - seen[1]) / ((now - seen[0]) / 60), 3)
+        if not seen or now - seen[0] > 1800:
+            _SEEN[c["mint"]] = (now, holders)
+    if len(_SEEN) > 5000:
+        for mint in sorted(_SEEN, key=lambda m: _SEEN[m][0])[:1000]:
+            _SEEN.pop(mint, None)
+    out = {
+        "buy_sell_5m": _ratio(buys5, sells5),
+        "buy_sell_1h": _ratio(f.get("buys_h1"), f.get("sells_h1")),
+        "buys_5m": buys5,
+        "vol_5m": vol5,
+        "vol_accel": _ratio(vol5 * 12 if vol5 is not None else None, vol1h),
+        "holders": holders,
+        "holder_growth": growth,
+        "smart": c.get("smart"),
+        "top10_rate": f.get("top10_rate"),
+        "dev_hold_rate": f.get("dev_hold_rate") if f.get("dev_hold_rate") is not None else f.get("creator_hold_rate"),
+        "creator": f.get("creator"),
+        "liq_mcap": _ratio(c.get("liq"), c.get("mcap")),
+        "change_5m": c.get("change_5m"),
+        "change_1h": c.get("change_1h"),
+        "change_6h": f.get("change_6h"),
+        "age_min": c.get("age_min"),
+        "rug_score": c.get("rug_score"),
+        "bubble_cluster": c.get("bubble_cluster"),
+        "sol_trend_1h": sol_trend,
+        "hour_utc": time.gmtime(now).tm_hour,
+    }
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def public(c, score, decision, note):
     return {
         "mint": c["mint"],
@@ -499,6 +589,7 @@ def public(c, score, decision, note):
         "bubble_cluster": None if c.get("bubble_cluster") is None else round(float(c["bubble_cluster"]), 3),
         "bubble_label": c.get("bubble_label") or "",
         "bubble_url": checks.map_url(c["mint"]),
+        "features": features(c, STATE.get("sol_trend_1h")),
     }
 
 
@@ -540,6 +631,7 @@ async def scan_once(session):
     await run("gmgn", lambda: from_gmgn(session, book))
     await run("birdeye", lambda: from_birdeye(session, book))
     await run("fomo", lambda: from_fomo(session, book))
+    STATE["sol_trend_1h"] = sol_trend_1h()
 
     ranked = []
     for c in book.values():
@@ -588,10 +680,14 @@ async def scan_once(session):
     for row in ranked:
         row.pop("_c", None)
     ranked.sort(key=lambda r: ({"enter": 0, "watch": 1, "skip": 2}[r["decision"]], -r["score"]))
+    for rank, row in enumerate(ranked, 1):
+        if isinstance(row.get("features"), dict):
+            row["features"]["rank"] = rank
     return ranked, sources
 
 
 async def scan_loop(eng, session, status):
+    tune.ensure_entry_rule()
     while True:
         deskio.backup_book(ct.DATA)
         tune.review()
@@ -625,6 +721,12 @@ async def scan_loop(eng, session, status):
                 break
             mint = row["mint"]
             if mint in eng.pos or bought_recently(mint):
+                continue
+            block = live.lab_entry_block(row.get("score"))
+            if block:
+                if time.time() - _LAB_SKIPPED.get(mint, 0) > float(cfg("entry_cooldown_min", 180)) * 60:
+                    _LAB_SKIPPED[mint] = time.time()
+                    eng.log("SKIP", mint, "+".join(row["sources"]), note=block)
                 continue
             # Fill at the DexScreener price. The exit loop uses that same price,
             # so a pump.fun curve quote cannot open a position that instantly stops out.

@@ -270,7 +270,7 @@ async def review(session=None, complete=None):
         print("eye review failed:", type(e).__name__, str(e)[:120])
         return _load()
     blob = "\n".join(n.get("text") or "" for n in knowledge)
-    settings = {} if len(_closed_rows()) < 30 else (parsed.get("settings") or {})
+    settings = {} if len(_closed_rows()) < tune.REVIEW_CLOSES else (parsed.get("settings") or {})
     for key, value in settings.items():
         if key in LOCKED or key not in tune.BOUNDS:
             continue
@@ -679,6 +679,13 @@ def strategy_line():
     if tune.locked():
         return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
     data = tune._load()
+    if data.get("entry_rule") == tune.ENTRY_RULE_ID:
+        v = data.get("values") or {}
+        return (
+            f"Two-source paper entry: {int(v.get('min_sources', 2))} sources, score {int(v.get('entry_score', 65))} "
+            f"or more, 5-minute move up to {int(v.get('max_change_5m', 60))}%. "
+            "A bust does not change it. The Lab's shadow books have to name a winner first."
+        )
     number = int(data.get("grind") or 0) % len(PRESETS) + 1
     return (
         f"Keeping strategy {number} of {len(PRESETS)}. "
@@ -732,7 +739,7 @@ def _grow_once(ids, recent, market):
     if held:
         return held
     n = len(recent)
-    if len(_closed_rows()) < 30:
+    if len(_closed_rows()) < tune.REVIEW_CLOSES:
         chase = market["chasing"] / market["names"] if market["names"] else 0
         if chase >= 0.4 and _current("max_change_5m", 90) > 40:
             nxt = _current("max_change_5m", 90) - 5
@@ -740,7 +747,7 @@ def _grow_once(ids, recent, market):
                 return f"Tightened the 5-minute chase cap to {int(nxt)}%."
         wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n) if n else 0
         if n:
-            return f"Kept the rules. The last {n} closes won {wr:.0%}. A rule change waits for 30 closes."
+            return f"Kept the rules. The last {n} closes won {wr:.0%}. A rule change waits for {tune.REVIEW_CLOSES} closes."
         return "Kept the rules. Not enough closes to move one."
     wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
     wr = (wins / n) if n else 0

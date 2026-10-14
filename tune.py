@@ -13,6 +13,10 @@ DATA = os.getenv("DATA_DIR", ".")
 PATH = os.path.join(DATA, "agent_tune.json")
 
 # None means "use config.json". Numbers are hard limits the agent cannot cross.
+# Rule changes from closed trades, and the model review's settings, wait for this many closes.
+# Tuning on 30 closes is mostly noise. Sizing still starts at 30.
+REVIEW_CLOSES = 100
+
 BOUNDS = {
     "min_sources": (1, 3),
     "entry_score": (55, 80),
@@ -143,6 +147,24 @@ def lock_strategy(why):
     return True
 
 
+ENTRY_RULE_ID = "two-source"
+ENTRY_RULE = {"min_sources": 2, "entry_score": 65, "max_change_5m": 60}
+
+
+def ensure_entry_rule():
+    """One-time switch to the 2-source paper entry. The 3-source rule never fired in 13,565 lab coins.
+    The lab keeps the 3-source rule as the `strict` shadow books."""
+    data = _load()
+    if data.get("entry_rule") == ENTRY_RULE_ID or data.get("strategy_locked"):
+        return False
+    for name, new in ENTRY_RULE.items():
+        _set(data, name, new, "Two-source paper entry: the 3-source rule took 0 trades in 13,565 lab coins.")
+    data["entry_rule"] = ENTRY_RULE_ID
+    data["changes"] = data["changes"][:100]
+    _save(data)
+    return True
+
+
 def install_preset(values, why):
     """Replace the paper rules with one grind preset. A locked strategy is left alone."""
     if locked():
@@ -164,7 +186,7 @@ def review():
         return _load()
     rows = _closed_rows()
     data = _load()
-    if len(rows) < 30 or len(rows) == data.get("reviewed_closes"):
+    if len(rows) < REVIEW_CLOSES or len(rows) == data.get("reviewed_closes"):
         return data
     buckets, _stops = _bucket(rows)
     n = len(rows)

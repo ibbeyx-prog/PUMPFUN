@@ -44,7 +44,14 @@ def rise_and_fade():
 
 
 def test_books_and_fills():
-    assert len(engine.BOOKS) == 10
+    assert len(engine.BOOKS) == 20
+    assert len({book.id for book in engine.BOOKS}) == 20
+    assert engine.REFERENCE_ID in {book.id for book in engine.BOOKS}
+    assert engine.round_trip_cost_usd(5.5, 10000) == 0.85
+    filters = engine.book_by_id("filters-ladder")
+    assert engine.would_enter(filters, snap(score=10, sources=["pump.fun"], change_5m=0))
+    assert not engine.would_enter(filters, snap(note="rugcheck: rugged"))
+    assert engine.would_enter(filters, snap(note="rugcheck 12"))
     harsh = engine.round_trip(1, 1, 5, 100)
     calm = engine.round_trip(1, 1, 5, 100000)
     assert harsh < calm < 0
@@ -52,10 +59,13 @@ def test_books_and_fills():
     assert not engine.would_enter(engine.BOOKS[0], snap(note="rugcheck: rugged"))
     strict = next(book for book in engine.BOOKS if book.id == "strict-ladder")
     desk = next(book for book in engine.BOOKS if book.id == "desk-ladder")
-    assert not engine.would_enter(strict, snap(score=75))
+    assert not engine.would_enter(strict, snap(score=65))
+    assert engine.would_enter(strict, snap(score=75))
+    assert not engine.would_enter(strict, snap(sources=["gmgn", "dexscreener"]))
     assert engine.would_enter(desk, snap())
-    gone = engine.simulate(desk, snap(), [])
-    assert gone["reason"] == "vanished"
+    assert engine.simulate(desk, snap(), []) is None
+    late = path_from([(m, 1.0) for m in range(10, 60)])
+    assert engine.simulate(desk, snap(), late) is None
     path = rise_and_fade()
     ladder = engine.simulate(desk, snap(), path)
     cut = engine.simulate(next(book for book in engine.BOOKS if book.id == "desk-cut"), snap(), path)
@@ -64,6 +74,32 @@ def test_books_and_fills():
     assert ladder["pnl"] != cut["pnl"]
     runner = engine.simulate(next(book for book in engine.BOOKS if book.id == "desk-runner"), snap(), path)
     assert runner["reason"] == "trail"
+
+
+def test_costs_and_breakdown():
+    assert engine.slippage(5.5, 0) == 0.03
+    assert abs(engine.slippage(5.5, 10000) - (0.03 + 2 * 5.5 / 10000)) < 1e-12
+    assert engine.slippage(5.5, 1) == 0.80
+    parts = engine.piece_parts(1.0, 2.0, 5.0, 1.0, 20000)
+    assert abs(sum(parts.values()) - engine.piece(1.0, 2.0, 5.0, 20000)) < 1e-12
+    assert parts["move"] == 5.0 and parts["slippage"] < 0 and parts["fee"] < 0 and parts["flat"] == -0.20
+    path = rise_and_fade()
+    for book in engine.BOOKS:
+        trade = engine.simulate(book, snap(), path)
+        assert abs(sum(trade["parts"].values()) - trade["pnl"]) < 1e-9
+        assert trade["peak"] >= 1.0
+    crash = path_from([(0, 1.0), (1, 1.0), (2, 0.6), (3, 0.3)])
+    stop = engine.simulate(next(b for b in engine.BOOKS if b.id == "desk-cut"), snap(), crash)
+    assert stop["reason"] == "stop" and stop["parts"]["stop_gap"] < 0
+    assert abs(stop["parts"]["move"] + stop["parts"]["stop_gap"] - 5.0 * (0.3 - 1)) < 1e-9
+    assert engine.label_2x(path, 0.0) is True
+    assert engine.label_2x(crash, 0.0) is False
+    dip = path_from([(0, 1.0), (1, 1.0), (2, 0.85), (3, 1.2)] + [(m, 1.2) for m in range(4, 241)])
+    assert engine.entry_point(dip, 0.0, "pullback")[1] == 0.85
+    assert engine.entry_point(dip, 0.0, "hold")[1] == 1.2
+    assert engine.entry_point(crash, 0.0, "hold") is None
+    assert engine.auc([1, 2, 3, 4], [False, False, True, True]) == 1.0
+    assert engine.auc([1, 1, 1, 1], [False, True, False, True]) == 0.5
 
 
 def test_stats():
@@ -122,6 +158,7 @@ def test_record_scan():
             "price_sol": 0.001,
             "age_min": 12,
             "rug_label": "clean",
+            "features": {"buy_sell_5m": 1.4, "creator": "Creator1"},
         }],
     }
     assert lab.record_scan(store, payload, now=1000) == 1
@@ -134,15 +171,56 @@ def test_record_scan():
     assert episodes[0]["sources"] == ["gmgn", "fomo"]
     report = lab.build_report(store)
     assert report["sample"] == "early"
-    assert len(report["books"]) == 10
-    assert [row["size_usd"] for row in report["tickets"]] == [5.5, 8.0, 12.0]
+    assert len(report["books"]) == 20
+    assert [row["size_usd"] for row in report["tickets"]] == [5.5, 8.0, 12.0] * 3
+    assert report["real_desk"]["id"] == engine.REAL_DESK_ID
+    assert report["readiness"]["book"] == engine.REAL_DESK_ID
+    assert report["verdict"]["verdict"] == "Not yet"
+    assert report["quotes"]["calibrated"] is False
     assert [row["id"] for row in report["baselines"]] == ["hold-sol", "buy-every-name"]
     assert report["readiness"]["ready"] is False
+    assert episodes[0]["features"]["buy_sell_5m"] == 1.4
+    assert episodes[0]["features"]["creator_launches"] == 0
+    assert [d["problem"] for d in report["diagnosis"]] == [
+        "signal is weak", "costs eat a real edge", "exits give gains back",
+    ]
+    assert report["model"]["status"].startswith("collecting")
+    assert report["stop_rule"]["verdict"].startswith("keep collecting")
+    assert report["regime"]["pause"] is False
+    text = lab.format_report(report)
+    assert "Diagnosis" in text and "Weekly verdict" in text
+
+
+def _confirm_row(book_id, n, mean, low, high, gross, costs):
+    return {"id": book_id, "n": n, "mean": mean, "ci": {"low": low, "high": high},
+            "parts": {"before_costs": gross, "costs": costs}, "paired": None}
+
+
+def test_verdict():
+    after = lab.research_windows()["confirm_until"] + engine.TRACK_S + 1
+    cal = {"calibrated": True, "shift_usd": 0.05, "why": ""}
+    every = {"n": 200, "mean": -0.40}
+    res = {"windows": {"freeze_at": "f", "confirm_until": "c"}, "frozen": {"picks": ["loose-ladder"]},
+           "confirm_every": every}
+    res["confirm"] = [_confirm_row("loose-ladder", 80, 0.50, 0.20, 0.80, 1.40, -0.90)]
+    assert lab.weekly_verdict(res, cal, after)["verdict"] == "Edge found"
+    uncal = {"calibrated": False, "shift_usd": 0.0, "why": "needs quotes"}
+    assert lab.weekly_verdict(res, uncal, after)["verdict"] == "Not yet"
+    res["confirm"] = [_confirm_row("loose-ladder", 30, 0.50, -0.20, 1.20, 1.40, -0.90)]
+    assert lab.weekly_verdict(res, cal, after)["verdict"] == "Not yet"
+    res["confirm"] = [_confirm_row("loose-ladder", 80, -0.30, -0.60, -0.05, 0.60, -0.90)]
+    assert lab.weekly_verdict(res, cal, after)["verdict"] == "Costs only"
+    res["confirm"] = [_confirm_row("loose-ladder", 80, -1.30, -1.60, -1.05, -0.40, -0.90)]
+    assert lab.weekly_verdict(res, cal, after)["verdict"] == "No edge"
+    res["frozen"] = None
+    assert lab.weekly_verdict(res, cal, after)["verdict"] == "Not yet"
 
 
 if __name__ == "__main__":
     test_books_and_fills()
+    test_costs_and_breakdown()
     test_stats()
     test_desk_losses()
     test_record_scan()
+    test_verdict()
     print("selftest ok")

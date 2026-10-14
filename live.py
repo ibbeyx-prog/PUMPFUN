@@ -161,17 +161,48 @@ def signature_matches_order(order, tx, owner):
     return post > pre
 
 
-_LAB = {"at": 0.0, "ready": False, "why": "lab has not cleared live trading"}
+_LAB = {"at": 0.0, "ready": False, "why": "lab has not cleared live trading",
+        "pause": False, "pause_why": "", "edges": []}
 
 
 def _apply_lab_report(report):
     gate = (report or {}).get("readiness") or {}
     ready = bool(gate.get("ready"))
+    regime = (report or {}).get("regime") or {}
+    edges = (report or {}).get("edges") or []
     _LAB.update(
         at=time.time(),
         ready=ready,
         why="lab cleared this strategy" if ready else "lab has not cleared live trading",
+        pause=bool(regime.get("pause")),
+        pause_why=str(regime.get("why") or "")[:160],
+        edges=[e for e in edges if isinstance(e, dict)],
     )
+
+
+def _score_bucket(score):
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return "unknown"
+    if score < 60:
+        return "under 60"
+    if score < 70:
+        return "60–69"
+    if score < 80:
+        return "70–79"
+    return "80+"
+
+
+def lab_entry_block(score):
+    """Why the lab says to skip a paper entry, or "". Without a lab report the desk trades as before."""
+    if _LAB["pause"]:
+        return "lab: market cold, " + _LAB["pause_why"]
+    bucket = _score_bucket(score)
+    for edge in _LAB["edges"]:
+        if edge.get("bucket") == bucket and edge.get("pays") is False:
+            return f"lab: score {bucket.replace('–', '-')} loses after costs"
+    return ""
 
 
 def lab_status(force=False):

@@ -17,13 +17,15 @@ Paper Scanner is a single-operator Solana meme-coin desk. It scans public feeds,
 - The reserve is $5. A config value outside $3–$5 is clamped into that band before sizing. The running book stays at $5.
 - The dashboard API requires `Authorization: Bearer <DASH_TOKEN>` when that variable is set. The token is stored in the browser as `dash_token`. It is not a user account.
 
-Three sample gates, each unlocking a different action:
+Sample gates, each unlocking a different action:
 
 | Closes | Unlocks |
 | --- | --- |
-| 30 | Win-rate sizing, and rule review other than a chase-cap tightening |
+| 30 | Win-rate sizing |
 | 50 sized | Strategy lock, when the mean return and the 95% interval are above 0 |
-| 100 on the lab `desk-ladder` book, over 14 days | Live queueing, and only with the interval and percentile checks in section 6.5 |
+| 100 on the desk | Rule review other than a chase-cap tightening, including the model review's settings |
+| 500 labeled lab coins with features | The learned-score test and the stop rule |
+| 100 on the lab `desk-ladder-real` book, over 14 days | Live queueing, and only with the interval and percentile checks in section 6.5 |
 - Secrets (`HELIUS_API_KEY`, `DASH_TOKEN`, `FOMO_API_KEY`, `BIRDEYE_API_KEY`, `ANTHROPIC_API_KEY`, `BUBBLEMAPS_API_KEY`, spend-lock hash and salt) are environment or gitignored files. They are never returned by the API and never written into these documents.
 
 ## 2. Roles
@@ -110,9 +112,11 @@ Feed chips, each with a state of `live`, `ready`, `link`, `key`, `down`, or `off
 | Solscan | explorer | `link` |
 | X, Telegram, Axiom, Robinhood, Dune, TradingView, CoinGlass, CoinMarketCap | various | Hardcoded `off`. A key for these does nothing |
 
-Equity panel: current equity in USD, realized USD, closed-trade count, and a sparkline of cumulative closed SOL PnL for the current run (rows after the last `RESET`).
+Equity panel: current equity in USD, realized USD and realized SOL, closed-trade count, and a sparkline of cumulative closed SOL PnL for the current run (rows after the last `RESET`). The SOL figure is shown because USD equity also moves with the SOL price.
 
-Stat tiles: win rate, best and worst closed PnL, open count against the cap, trade size, skip count, chase cap, closed PnL.
+Stat tiles: win rate, best and worst closed PnL, open count against the cap, trade size, skip count, chase cap, closed PnL. The closed PnL subtitle reads `<total> SOL · N closed`.
+
+Stall warning, above the tabs. Shown only when the latest scan is more than 300 seconds old, or any feed chip is `down`. Text names the minutes since the last scan and the down feeds. A paper-mode halt is normal and is not a warning. This is an in-page warning only. No push, email, or Telegram message is sent.
 
 Budget strip:
 
@@ -152,9 +156,9 @@ Empty state: "First scan still running."
 
 Three tables.
 
-Open positions: token, source label, multiple, fraction left, realized PnL, age in minutes, suggestion, Eye tip.
+Open positions: token, source label, multiple, fraction left, realized PnL, round-trip cost in USD, age in minutes, suggestion, Eye tip. Cost is `round_trip_cost_usd(size_usd, liq_usd)` from section 5. It shows `–` when the server does not return it.
 
-Recent activity, newest first, up to 40 rows: time, event (`BUY`, `SELL`, `CLOSED`, `SKIP`, `RESET`), mint, multiple, PnL, note, Eye tip.
+Recent activity, newest first, up to 40 rows: time (shown as `MM-DD HH:MM` for either stored time format), event (`BUY`, `SELL`, `CLOSED`, `SKIP`, `RESET`), mint, multiple, PnL, note, Eye tip.
 
 Tracked wallets: address linked to Solscan, SOL PnL, win rate, trade count, median hold in seconds. Empty until a wallet ranking pass has written `wallets.json`.
 
@@ -170,7 +174,7 @@ One row per completed 24-hour window: start, end, closed count, win rate, SOL Pn
 | Agent read | Lesson from the current run once five closes exist |
 | Skills | Eight fixed paper checks and when they were last studied |
 | Eye | Growth history, improvement tips, learned notes. The written strategy and briefs are on the desk above |
-| Agent changes | Time, setting, old value, new value, reason. Empty until Eye has 30 closed trades |
+| Agent changes | Time, setting, old value, new value, reason. Empty until Eye has 100 closed trades |
 
 Strategy line is “Keeping strategy N of 4. A bust does not rotate presets.” or “Sticking with this strategy” when locked.
 
@@ -190,6 +194,38 @@ Rendered in the header. The browser looks for `window.phantom.solana` or `window
 ### 3.8 Chat dock
 
 Slide-over. History is the last 40 messages, capped at 80 on disk. The operator asks about PnL, open positions, the 24-hour report, or a token. Answers are composed from the paper book, not from a second trading model. The dock is unavailable until login.
+
+### 3.9 Lab page (separate service)
+
+A second web page served by `paper-scanner-lab/lab.py serve`. It is not a tab on the desk. It needs `LAB_KEY`, sent as `?key=` or the `X-Lab-Key` header. A missing key returns 401, and an unset `LAB_KEY` refuses every request. The page is read-only text, in this order:
+
+| Block | Contents |
+| --- | --- |
+| Header | Generated time, sample label, scan rows, coins, finished episodes, and the fill assumptions |
+| Weekly verdict | Edge found, Not yet, No edge, or Costs only, with the reason, the research phase and dates, whether costs are quote-calibrated, and each frozen pick's confirm-week n, mean, interval, gross, and costs against buy-every-name and hold-SOL |
+| Outcomes | By decision, by score bucket, by source count, and by skip reason: n, mean, win rate, 2x before stop |
+| Research books | Twenty books: five entry rules (strict = 3 sources and score 70+, desk = 2 sources and 65+, loose = 2 sources and 55+, looser = 1 confirming source, filters-only = hard filters alone) times four exits (ladder 2X/3.5X/5X, cut fast at 0.85 after 8 minutes, runner = half at 2X then a 30% trail, wide stop at −50%). They ignore the desk's cooldown, one-entry-per-scan, and open-position limits. Each shows n, total, mean, win rate, 95% interval, verdict, random percentile, and a paired bootstrap difference against `filters-ladder` on the same signals (a skipped signal counts as $0). Above them is `desk-ladder-real`, the desk ladder with one entry per scan and at most five open, which feeds the live gate |
+| Explore and confirm weeks | Explore week (default Oct 15 to Oct 21 UTC) per-book paired results and provisional leaders. Four hours after the freeze, the top 3 by paired difference with 30 or more trades are stored once in `meta.frozen_picks` with the count of books tried, and never recomputed. The confirm week (to Oct 28) scores only those picks. Dates come from `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, and `LAB_CONFIRM_UNTIL` |
+| Jupiter quotes | Quote rows against desk fills (target 95% coverage), median and p90 gap per side, and no-route share. With 30 good quotes per side, the summed positive median gaps times the ticket become the per-trade cost shift used by the verdict |
+| Diagnosis | Which of three problems the book has: signal is weak, costs eat a real edge, or exits give gains back. Each says looks like it, does not, or too little data, with its evidence |
+| Profit and loss per trade | For each book, ticket size, and baseline: mean dollars from price move, stop gaps, slippage, the 1% fee, and the $0.20 per transaction, summing to net, plus gross (move and stop gap) and cost drag. Also median peak, median close multiple, and the share that gave back gains |
+| Ticket size | The three best entry rules on the ladder exit (30 or more trades, else desk, loose, looser) at $5.50, $8, and $12 |
+| Baselines | Hold SOL (total 0) and buy every tracked name on the ladder at $5.50 |
+| Live gate | Open or closed, `desk-ladder-real` closes, span in days |
+| Desk losing closes | Count by tag: rug, gave back gains, slow bleed, sold too early |
+| Entry timing | Ladder exits at $5.50 on every tracked coin and on the loose entry rule, entered three ways: 45 seconds after the signal, on a 10% pullback within 15 minutes, or only if the price is still at or above the first quote 3 minutes later |
+| Market | Share of tracked coins that hit 2x before 0.65x over the prior 24 hours, the bottom-quarter pause line, cold and warm results, and whether to pause |
+| Score edge | Per score bucket at $5.50: price move before costs, costs, and net. A bucket with 100 or more coins and a net at or below 0 does not pay |
+| Eye rules | Each Eye rule as a shadow test. “Copy arrives late” reports the trades it blocks and whether they lose. The hostile-regime blocks guard rule changes over time and cannot be replayed |
+| Learned score | Logistic model on the logged features. The label is "peaked 1.5X before a 35% drop", before costs. It waits for 100 positive examples (and 500 labeled coins), trains before the last 7 days, tests on that untouched week, and compares AUC with the hand score. Adoption is by hand only |
+| Stop rule | After 500 labeled coins and a tested model, if no feature set beats random on the untouched week and every book loses after costs, stop adding agents |
+| Hypotheses | Labeled as not findings |
+
+Only finished coins are replayed. A coin whose first quote came later than 165 seconds after the signal is not traded, as the desk gives up at about 70 seconds. The collector prices every open coin each minute, least recently priced first. Before this rule, the median coin's first quote arrived about 1.8 hours after its signal, so earlier lab results measured a much later entry than the desk's.
+
+The lab report is rebuilt every 5 minutes on its own database connection, so collection is not held up.
+
+Sample labels count labeled coins with a timely entry: under 100 is `early`, 100 or more is `meaningful`, 300 or more is `trustworthy`. Do not change a rule before `trustworthy`. A book that wins can be copied by hand onto the tune fields. Nothing is copied automatically.
 
 ## 4. Data fields
 
@@ -256,6 +292,7 @@ Equity USD is `(start_sol + realized_sol + unrealized SOL) * sol_price`. It move
 | wash | boolean | GMGN wash flag |
 | rug_score, rug_label, rug_dangers, holder_pct, rugged | RugCheck | |
 | bubble_score, bubble_cluster, bubble_top10, bubble_label, bubble_url | Bubblemaps | |
+| features | object | Logged at the signal for the lab's learned score: `buy_sell_5m`, `buy_sell_1h`, `buys_5m`, `vol_5m`, `vol_accel` (5-minute volume × 12 over 1-hour volume), `holders`, `holder_growth` (holders per minute since this process first saw the mint), `smart`, `top10_rate`, `dev_hold_rate`, `creator`, `liq_mcap`, `change_1h`, `sol_trend_1h`, `hour_utc`. Missing values are omitted. Unique buyers per minute is not available from these feeds. The lab adds `creator_launches` from coins it saw earlier |
 
 ### 4.5 Eye knowledge
 
@@ -283,7 +320,9 @@ Bounds Eye and the model may write:
 
 Also stored: `reviewed_closes`, `changes[]` (time, what, from, to, why), `grind` index, `strategy_locked` and its reason.
 
-Rule changes other than a chase-cap tightening wait for 30 closes. Review, including Anthropic’s settings, waits for the same 30 closes. A hostile research note still blocks loosening `entry_score`, raising `max_change_5m`, or lowering `min_sources`.
+Rule changes other than a chase-cap tightening wait for 100 closes (`tune.REVIEW_CLOSES`). Review, including Anthropic’s settings, waits for the same 100 closes. Tuning on 30 closes is mostly noise. A hostile research note still blocks loosening `entry_score`, raising `max_change_5m`, or lowering `min_sources`.
+
+At the first scan after this release, `tune.ensure_entry_rule()` sets the paper entry once to the two-source rule: `min_sources` 2, `entry_score` 65, `max_change_5m` 60. It writes `entry_rule: "two-source"` and one change note per field, and it skips a locked strategy. The 3-source rule took 0 trades in 13,565 lab coins. The lab keeps it as the `strict` books.
 
 The four presets below are named strategies. The grind index is not incremented when the wallet is refilled. A later switch waits until a lab shadow book beats the desk ladder with an interval that excludes zero. The desk does not switch by itself.
 
@@ -366,6 +405,8 @@ Exits, checked on the price poll:
 
 Slippage per side is `min(80%, 3% + 2 × trade_usd / pool_liquidity_usd)`. Unknown liquidity stays at 3%. Fee is 1% per side plus $0.20 converted to SOL at the current price. The entry fee is subtracted from realized SOL when the position opens, and it is included in the position PnL so a later `CLOSED` row matches the bank.
 
+Round-trip cost in USD is `2 × (1% × size + $0.20) + 2 × slippage × size`. A $5.50 ticket in a $10,000 pool costs $0.85, about 15%. At these sizes the $0.20 per side dominates, so a small win can close flat. The lab's ticket books test whether a larger size holds up. The desk does not skip a name on cost alone.
+
 Open positions are priced every 12 seconds. A pool that is half the entry liquidity, or less, sells the rest. Three confirmed DexScreener absences close at about 10% of the last price. A stop arms when price is at or below −35% and fills at the next poll’s price.
 
 Eye size, from equity after the $5 reserve. Recent win rate is the last 15 closes:
@@ -390,8 +431,9 @@ Size never exceeds free cash, and a result under $4 is $0. The buy note reads `S
 2. Names are merged by mint. Solana FOMO rows use network id `1399811149` and a nested token address. EVM `0x` addresses are ignored.
 3. Up to eight names that are not already skipped are sent to RugCheck and, when keyed, Bubblemaps. The score is computed again.
 4. Eye tends the wallet, then chooses the USD size.
-5. The first `enter` that is not already open and not in cooldown is held as a pending entry. About 45 seconds later the engine prices it. No price by about 70 seconds writes `SKIP` and does not open a position.
-6. The delayed fill opens the paper position. If wallet trading is on and the lab gate is open, that fill queues a Phantom buy. The paper fill does not wait for the signature.
+5. When the desk has a lab report (`LAB_URL` and `LAB_KEY`), an `enter` is skipped if the lab says to pause for a cold market, or if its score bucket does not pay after costs. The note starts `lab:`, and it is written at most once per mint per cooldown. With no lab report, the desk trades as before. No trade is a valid action.
+6. The first `enter` that is not already open and not in cooldown is held as a pending entry. About 45 seconds later the engine prices it. No price by about 70 seconds writes `SKIP` and does not open a position.
+7. The delayed fill opens the paper position. If wallet trading is on and the lab gate is open, that fill queues a Phantom buy. The paper fill does not wait for the signature.
 
 ### 6.2 Manage an open position
 
@@ -420,7 +462,7 @@ When nothing is open, the run has at least one close, and free cash is under $4:
 3. A later paper entry queues one pending order under the live USD caps.
 4. The header shows Approve. The browser requests a Jupiter quote (`slippageBps` 300) and swap for the SOL mint `So11111111111111111111111111111111111111112`, then asks Phantom to sign and send.
 5. The browser posts the signature, or a failure. An empty signature is rejected. A signature is marked sent only after `getSignatureStatuses` says confirmed and `getTransaction` shows the linked wallet gained the mint on a buy, or spent it on a sell.
-6. Allow trades stays off until the lab report's `readiness.ready` is true: the desk-ladder book has at least 100 closes over 14 days, a confidence interval above zero, and a random percentile of at least 90. Set `LAB_URL` and `LAB_KEY` on the desk so it can read that report.
+6. Allow trades stays off until the lab report's `readiness.ready` is true: the `desk-ladder-real` book has at least 100 closes over 14 days, a confidence interval above zero, and a random percentile of at least 90. Set `LAB_URL` and `LAB_KEY` on the desk so it can read that report.
 7. A paper exit at a ladder, stop, or liquidity drop queues an approve-to-sell order for any live position in that mint. There is no automatic sell.
 
 ### 6.6 Daily report
@@ -433,9 +475,11 @@ On each staff pass, Vet, Scan watch, Scribe, and Risk each write one note if the
 
 ### 6.8 Paper Scanner Lab
 
-The lab is a separate process. It reads the desk’s candidate and trade endpoints. It does not send orders, and it does not write the desk’s files or keys. It stores hits, price episodes, and a copy of desk trades, then scores shadow books including `desk-ladder` and `desk-runner`.
+The lab is a separate process. It reads the desk’s candidate and trade endpoints. It does not send orders, and it does not write the desk’s files or keys. It stores hits, price episodes, and a copy of desk trades, then scores the twenty research books and `desk-ladder-real`. It also reads the desk's `/api/quotes` summary.
 
-`readiness.ready` is true only when `desk-ladder` has at least 100 closes, the episode span is at least 14 days, the confidence-interval low is above 0, and the random percentile is at least 90. The desk reads that report from `LAB_URL` with `LAB_KEY` about every 10 minutes. If either variable is missing, or the report fails, live queueing stays closed. Desk PnL is not the live gate.
+The lab's fill math is the desk's: `paper-scanner-lab/parity_check.py` drives the real `copytrader.Paper` in a temporary `DATA_DIR` and must match the lab within $0.01, including `round_trip_cost_usd(5.5, 10000) = 0.85` on both sides. The desk ledger keeps no pool size, SOL price, or sell fraction, so an exact replay of the real ledger is not possible.
+
+`readiness.ready` is true only when `desk-ladder-real` has at least 100 closes, the episode span is at least 14 days, the confidence-interval low is above 0, and the random percentile is at least 90. The desk reads that report from `LAB_URL` with `LAB_KEY` about every 10 minutes. If either variable is missing, or the report fails, live queueing stays closed. Desk PnL is not the live gate.
 
 The lab report already includes outcome tables by decision, score bucket, source count, and skip reason, plus a post-mortem of losing desk closes tagged rug, gave back gains, slow bleed, or sold too early. It also scores the desk ladder at $5.50, $8, and $12, and prints a hold-SOL baseline and a buy-every-tracked-name baseline.
 
@@ -447,6 +491,7 @@ The lab report already includes outcome tables by decision, score bucket, source
 | GET | `/api/summary` | Equity, desk, budget, open positions, lesson, skills, reports, tune |
 | GET | `/api/trades?limit=` | Current-run rows, newest first, with Eye tips |
 | GET | `/api/candidates` | Latest scan |
+| GET | `/api/quotes` | Jupiter quote log beside paper fills: last 500 rows, coverage against BUY and SELL rows since the first quote, and per side the n, good quotes, no-route and error counts, and median and p90 gap |
 | GET | `/api/wallets` | Ranked wallets |
 | GET | `/api/eye` | Knowledge, growth, assistants, strategy |
 | GET, POST | `/api/chat` | Read history, send a question |
@@ -456,6 +501,18 @@ The lab report already includes outcome tables by decision, score bucket, source
 | POST | `/api/phantom/done` | Record signature or failure |
 
 Static files are the built dashboard. The API is same-origin in production.
+
+Each open position in `/api/summary` carries `source`, `size_usd`, and `cost_usd` beside the stored fields. Each trade row in `/api/trades` carries `source` as an alias of `wallet`. `budget` carries `realized_sol`.
+
+Lab service:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Process up. No key |
+| GET | `/api/report?key=` | Full report JSON, including `books`, `tickets`, `baselines`, `outcomes`, `desk_losses`, and `readiness` |
+| GET | `/?key=` | The read-only lab page |
+
+The lab reads the desk at `SCANNER_URL` with `DASH_TOKEN` every 60 seconds: `/api/candidates` and `/api/trades?limit=500`.
 
 Environment:
 
@@ -474,6 +531,38 @@ Environment:
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |
 
+Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the lab page password), `DATA_DIR` (`/data`), optional `ANTHROPIC_API_KEY` for hypotheses.
+
+## 7a. Storage, time, and deployment
+
+- Every JSON book file is written to `<file>.tmp`, flushed, synced, and then renamed over the old file. A crash mid-write leaves the previous file intact.
+- Once per UTC day, at the start of a scan pass, the book files are copied to `DATA_DIR/backups/YYYY-MM-DD/` and a `.ok` marker is written. `config.json` and `.env` are never copied. `backups/` is gitignored.
+- New timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`. Every reader must also accept the older local `YYYY-MM-DD HH:MM:SS` and `YYYY-MM-DD HH:MM`. Old rows are not rewritten. The screen converts either form for display. Chat message times are still local `HH:MM`, and the lab's `generated_at` is still local.
+- The desk deploys from GitHub `main` through the root `Dockerfile`. That file copies each Python module by name. A new module must be added to the `COPY` line, or the container fails at startup with `ModuleNotFoundError`.
+- A restart drops pending entries still in their 45-second wait. Open positions survive because they are in `state.json`.
+- The lab deploys as its own service from `paper-scanner-lab/` with its own volume. It must never be built from the repository root, because the root image copies `config.json`.
+
+## 7b. Not built yet
+
+From the October 13 gap report. G1 to G6 must be done before any live money. Each is a requirement for the developer, not a description of the running desk.
+
+| ID | Requirement |
+| --- | --- |
+| G1 | Paper half built: `quotes.py` asks Jupiter (lite-api, then api.jup.ag) for the same size after every paper buy and sell, and writes `DATA_DIR/quotes.csv`: time, side, mint, usd, paper_px, quote_px, gap (positive = the real route is worse), impact, route, and status ok, no_route, or error. It never builds or signs a swap. Still to do: once live, store quote, price impact, and confirmed fill per order. Refuse a buy when quoted impact is over 5%. Live opens only when the median gap between quote and paper fill is under 3 percentage points |
+| G2 | Alert the operator by push, Telegram, or email when a sell order queues. Mark an order stale after 5 minutes and re-quote. Show a banner for any pending sell |
+| G3 | Hash the spend lock with scrypt or Argon2, and require 8 or more characters before live trading. Existing SHA-256 locks must still verify once, then be re-hashed |
+| G4 | A `live_audit` record for Connect, Allow, Halt, Resume, and lock changes: time, action, actor, reason, outcome |
+| G5 | Rate-limit failed dashboard logins per IP, serve HTTPS only, and rotate `DASH_TOKEN` on a schedule |
+| G6 | Set Jupiter slippage from the quoted impact instead of a fixed 300 bps. Expose a priority-fee setting. Test a Jito route. The first live week uses `LIVE_MAX_TRADE_USD` of $2 or less, a separate wallet, and a set lock |
+| G8 | Built in the lab: paired bootstrap against `filters-ladder`, explore week, frozen picks with the count tried, confirm week, weekly verdict. Still to do: show it on the desk |
+| G9 (rest) | Tag each lab episode with the SOL trend and launch volume |
+| G13 (rest) | Send the stall, feed-down, halt, and gate-change warnings outside the page |
+| G14 | Automate the acceptance checks in section 8, plus a replay test that runs recorded scans through the engine and compares the ledger |
+| G15 | Per-feed rate budgets, backoff, and a feed-health counter for DexScreener, RugCheck, Bubblemaps, and FOMO |
+| G16 to G18 | A propose-only researcher, an early-entry stream, and a narrative tag. Only after the current entries show an edge |
+
+The lab now uses the desk's slippage formula from section 5, so ticket-book dollars follow the desk's cost model.
+
 ## 8. Acceptance
 
 - With no Phantom connection, paper buys still open and the banner names the reserve.
@@ -488,6 +577,13 @@ Environment:
 - A public map link uses the mint as `address` and `solana` as `chain`.
 - A bust refills to $50 and does not change the grind index.
 - A live queue is refused while `LAB_URL` or `LAB_KEY` is unset.
+- `round_trip_cost_usd(5.5, 10000)` returns 0.85, and the Book tab shows it in the Cost column.
+- A ledger with both local and UTC rows still produces the same win rate, report windows, and cooldowns.
+- Killing the process during a save leaves a readable JSON file.
+- The first scan of a UTC day writes `backups/<date>/.ok`, and `config.json` is not in that folder.
+- The stall warning appears when the scan is 6 minutes old, and disappears on the next good scan.
+- The lab report has `tickets` for 5.5, 8, and 12, and `baselines` for `hold-sol` and `buy-every-name`. `books` still has ten rows.
+- A fresh image built from the root `Dockerfile` starts without an import error.
 
 ## 9. Out of scope
 
