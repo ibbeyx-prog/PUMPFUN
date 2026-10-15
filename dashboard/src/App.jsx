@@ -504,14 +504,25 @@ export default function App() {
             <Shell title="Open positions">
               <table className="w-full text-sm">
                 <thead>
-                  <tr>{["Token", "Source", "Multiple", "Left", "Realized", "Cost", "Age", "Suggestion", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                  <tr>{["Token", "Source", "Invested", "Multiple", "Left", "Realized", "Cost", "Age", "Suggestion", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody>
-                  {sum.open.length === 0 && <Empty cols={9}>No open positions.</Empty>}
+                  {sum.open.length === 0 && <Empty cols={10}>No open positions.</Empty>}
                   {sum.open.map((p) => (
                     <tr key={p.mint} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5"><a className="text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={`https://dexscreener.com/solana/${p.mint}`}>{p.symbol || short(p.mint)}</a></td>
                       <td className="px-4 py-2.5 text-slate-400">{short(p.wallet)}</td>
+                      <td className="num whitespace-nowrap px-4 py-2.5">
+                        {p.size_usd ? (
+                          <>
+                            <div className="font-medium text-slate-200">${Number(p.size_usd).toFixed(2)}</div>
+                            <div className={`text-[11px] ${(p.x || 0) >= 1 ? "text-emerald-300/80" : "text-rose-300/80"}`}>
+                              now ${(Number(p.size_usd) * Number(p.left || 0) * Number(p.x || 0)).toFixed(2)}
+                              {Number(p.left) < 1 ? <span className="text-slate-500"> on {pct(p.left)} held</span> : null}
+                            </div>
+                          </>
+                        ) : "–"}
+                      </td>
                       <td className={`num px-4 py-2.5 font-medium ${p.x >= 1 ? "text-emerald-300" : "text-rose-300"}`}>{p.x ? `${p.x.toFixed(2)}X` : "–"}</td>
                       <td className="num px-4 py-2.5">{pct(p.left)}</td>
                       <td className={`num px-4 py-2.5 ${tone(p.pnl)}`}>{pnlUsd(p.pnl) || "–"}</td>
