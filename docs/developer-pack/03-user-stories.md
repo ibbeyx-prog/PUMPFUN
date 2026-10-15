@@ -156,7 +156,7 @@ Priority: now.
 
 As Eye, I want a flat book refilled to $50 on the same preset, so that one bust does not throw away the rules before the sample is real.
 
-Acceptance: refill runs only when nothing is open, the run has at least one close, and free cash is under $4. The ledger gets a `RESET`. The grind index does not change. A lock happens only at 50 or more sized closes, a mean return above 0, and a 95% interval lower bound above 0. Later refills keep that lock. A lab shadow book can name a winner. Eye does not copy it onto the desk by itself.
+Acceptance: refill runs only when nothing is open, the run has at least one close, and the sizing rule returns $0 for the next buy. A wallet with $4 to $5 free and fewer than 30 closes refills; it does not sit skipping every entry. The ledger gets a `RESET`. The grind index does not change. A lock happens only at 50 or more sized closes, a mean return above 0, and a 95% interval lower bound above 0. Later refills keep that lock. A lab shadow book can name a winner. Eye does not copy it onto the desk by itself.
 
 Priority: now.
 
@@ -456,7 +456,7 @@ As the desk, I want to skip entries when the lab says the market is cold or the 
 
 Acceptance: only applies when `LAB_URL` and `LAB_KEY` are set. A pause needs 3 days of data and cold markets that lost more than warm ones. A bucket needs 100 coins. The skip note starts `lab:`.
 
-Priority: now. Off until the lab variables are set on the desk.
+Priority: now. On since Oct 14, 2026, when `LAB_URL` and `LAB_KEY` were set on the desk.
 
 ### LB-7 Say what predicts a loss
 

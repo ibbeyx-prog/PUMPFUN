@@ -12,7 +12,8 @@ Paper Scanner is a single-operator Solana meme-coin desk. It scans public feeds,
 - A paper entry needs a confirming market: GMGN, DexScreener, or Birdeye. pump.fun and FOMO can add score. They cannot confirm an entry alone.
 - One new paper entry per scan. One open position per mint. Cooldown after a buy is 180 minutes.
 - Until 30 closes, Eye sizes a fixed $5.50, or $5 when free cash is between $5 and $5.50. After 30 closes, size follows the recent win rate. Free cash under $4, or a computed size under $4, skips the buy.
-- When the flat wallet cannot fund a buy above the fee reserve, and the current run has at least one close, Eye refills the paper bank to $50 and keeps the current preset. A bust does not advance the grind index.
+- When nothing is open, the current run has at least one close, and the sizing rule returns $0 for the next buy, Eye refills the paper bank to $50 and keeps the current entry rule. The refill test must be the sizing rule itself. An older separate test ("free cash under $4") left $4 to $5 balances unable to trade or refill, and the desk sat at $4.17 skipping every entry until Oct 14, 2026. A bust does not advance the grind index.
+- The paper entry is the two-source rule: at least 2 sources including a confirming market, score 65 or more, and a 5-minute move from 5% to 60%. It was applied once on Oct 14, 2026 by `tune.ensure_entry_rule()`.
 - A strategy locks only when the current run has at least 50 closes, the mean return per trade is above 0, and the 95% bootstrap interval’s lower bound is above 0, after the harsh fill costs. Locked rules are not loosened or replaced. The lab may name a shadow-book winner. The desk does not adopt it by itself.
 - The reserve is $5. A config value outside $3–$5 is clamped into that band before sizing. The running book stays at $5.
 - The dashboard API requires `Authorization: Bearer <DASH_TOKEN>` when that variable is set. The token is stored in the browser as `dash_token`. It is not a user account.
@@ -292,7 +293,7 @@ Equity USD is `(start_sol + realized_sol + unrealized SOL) * sol_price`. It move
 | wash | boolean | GMGN wash flag |
 | rug_score, rug_label, rug_dangers, holder_pct, rugged | RugCheck | |
 | bubble_score, bubble_cluster, bubble_top10, bubble_label, bubble_url | Bubblemaps | |
-| features | object | Logged at the signal for the lab's learned score: `buy_sell_5m`, `buy_sell_1h`, `buys_5m`, `vol_5m`, `vol_accel` (5-minute volume × 12 over 1-hour volume), `holders`, `holder_growth` (holders per minute since this process first saw the mint), `smart`, `top10_rate`, `dev_hold_rate`, `creator`, `liq_mcap`, `change_1h`, `sol_trend_1h`, `hour_utc`. Missing values are omitted. Unique buyers per minute is not available from these feeds. The lab adds `creator_launches` from coins it saw earlier |
+| features | object | Logged at the signal for the lab's learned score: `buy_sell_5m`, `buy_sell_1h`, `buys_5m`, `vol_5m`, `vol_accel` (5-minute volume × 12 over 1-hour volume), `holders`, `holder_growth` (holders per minute since this process first saw the mint), `smart`, `top10_rate`, `dev_hold_rate`, `creator`, `liq_mcap`, `change_5m`, `change_1h`, `change_6h` (DexScreener `priceChange.h6`), `age_min`, `rug_score` (RugCheck), `bubble_cluster` (Bubblemaps, when keyed), `sol_trend_1h`, `hour_utc`, and `rank` (1-based position in the sorted scan). Missing values are omitted. Unique buyers per minute is not available from these feeds. The lab adds `creator_launches` from coins it saw earlier |
 
 ### 4.5 Eye knowledge
 
@@ -318,7 +319,7 @@ Bounds Eye and the model may write:
 | early_cut_x | 0.70–0.90 |
 | early_cut_min | 8–20 |
 
-Also stored: `reviewed_closes`, `changes[]` (time, what, from, to, why), `grind` index, `strategy_locked` and its reason.
+Also stored: `reviewed_closes`, `changes[]` (time, what, from, to, why), `grind` index, `strategy_locked` and its reason, and `entry_rule` (`"two-source"` once applied).
 
 Rule changes other than a chase-cap tightening wait for 100 closes (`tune.REVIEW_CLOSES`). Review, including Anthropic’s settings, waits for the same 100 closes. Tuning on 30 closes is mostly noise. A hostile research note still blocks loosening `entry_score`, raising `max_change_5m`, or lowering `min_sources`.
 
@@ -450,7 +451,7 @@ About every 10 minutes, sooner on the first pass if the scan has not posted name
 
 ### 6.4 Bust and refill
 
-When nothing is open, the run has at least one close, and free cash is under $4:
+When nothing is open, the run has at least one close, and `choose_trade_usd()` returns under $4 (for example, $4.17 free with fewer than 30 closes, where a trade needs $5):
 
 - If 50 or more closes are positive after costs and the 95% interval is above zero, lock the rules, refill to $50, and write `RESET`.
 - Otherwise refill to $50 and keep the current preset. A bust does not advance the grind index.
@@ -509,10 +510,10 @@ Lab service:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Process up. No key |
-| GET | `/api/report?key=` | Full report JSON, including `books`, `tickets`, `baselines`, `outcomes`, `desk_losses`, and `readiness` |
+| GET | `/api/report?key=` | Full report JSON, including `books`, `real_desk`, `tickets`, `baselines`, `research`, `quotes`, `verdict`, `outcomes`, `diagnosis`, `edges`, `model`, `stop_rule`, `desk_losses`, and `readiness` |
 | GET | `/?key=` | The read-only lab page |
 
-The lab reads the desk at `SCANNER_URL` with `DASH_TOKEN` every 60 seconds: `/api/candidates` and `/api/trades?limit=500`.
+The lab reads the desk at `SCANNER_URL` with `DASH_TOKEN` every 60 seconds: `/api/candidates`, `/api/trades?limit=500`, and `/api/quotes` (skipped quietly on an older desk).
 
 Environment:
 
@@ -531,16 +532,30 @@ Environment:
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |
 
-Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the lab page password), `DATA_DIR` (`/data`), optional `ANTHROPIC_API_KEY` for hypotheses.
+Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the lab page password), `DATA_DIR` (`/data`), optional `ANTHROPIC_API_KEY` for hypotheses, and optional `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, `LAB_CONFIRM_UNTIL` (UTC `YYYY-MM-DDTHH:MM:SSZ`; defaults Oct 15, Oct 21, Oct 28, 2026).
 
 ## 7a. Storage, time, and deployment
 
 - Every JSON book file is written to `<file>.tmp`, flushed, synced, and then renamed over the old file. A crash mid-write leaves the previous file intact.
 - Once per UTC day, at the start of a scan pass, the book files are copied to `DATA_DIR/backups/YYYY-MM-DD/` and a `.ok` marker is written. `config.json` and `.env` are never copied. `backups/` is gitignored.
-- New timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`. Every reader must also accept the older local `YYYY-MM-DD HH:MM:SS` and `YYYY-MM-DD HH:MM`. Old rows are not rewritten. The screen converts either form for display. Chat message times are still local `HH:MM`, and the lab's `generated_at` is still local.
+- New timestamps are UTC `YYYY-MM-DDTHH:MM:SSZ`. Every reader must also accept the older local `YYYY-MM-DD HH:MM:SS` and `YYYY-MM-DD HH:MM`. Old rows are not rewritten. The server runs in UTC, so a stamp without a zone is read as UTC. The screen shows every time in Maldives time (`Indian/Maldives`, UTC+5), and the Recent activity column is labeled `Time (MVT)`. Chat message times are still local `HH:MM`. The lab's `generated_at` is UTC.
 - The desk deploys from GitHub `main` through the root `Dockerfile`. That file copies each Python module by name. A new module must be added to the `COPY` line, or the container fails at startup with `ModuleNotFoundError`.
 - A restart drops pending entries still in their 45-second wait. Open positions survive because they are in `state.json`.
-- The lab deploys as its own service from `paper-scanner-lab/` with its own volume. It must never be built from the repository root, because the root image copies `config.json`.
+- The lab deploys as its own service from `paper-scanner-lab/` with its own volume (`railway up ./paper-scanner-lab --path-as-root --service scanner-lab`). It must never be built from the repository root, because the root image copies `config.json`. `paper-scanner-lab/data/` is gitignored and is not uploaded.
+
+### Deployed state, Oct 14, 2026
+
+| Item | State |
+| --- | --- |
+| Desk | Railway service `dashboard`, https://pumpfunagent.up.railway.app, from `main` at `f89d91d` |
+| Lab | Railway service `scanner-lab`, https://scanner-lab-production.up.railway.app, uploaded from `paper-scanner-lab/`. About 14,000 coins recorded, 11,300 finished |
+| Desk to lab | `LAB_URL` and `LAB_KEY` are set on the desk. Lab entry skips are on. The live gate reads `desk-ladder-real` and is closed |
+| Paper entry | Two-source rule applied. The wallet refilled to $50 after the refill fix and resumed paper trades |
+| Quote log | First rows: 2 quotes for 2 fills. Buy gap +5.7% (the real route was worse). A stop-loss sell quoted far above the paper proceeds, most likely the paper slippage cap biting in a thin pool. One row decides nothing; the verdict uses medians over 30 or more quotes per side |
+| Known issue | Birdeye trending returns HTTP 400 on every scan, so Birdeye adds no confirmation. Check `BIRDEYE_API_KEY` and the request parameters |
+| Live trading | Off. No Phantom order has been queued |
+
+Research timeline: explore week Oct 15 to Oct 21 UTC, picks freeze 4 hours after Oct 21 00:00, confirm week to Oct 28, verdict on the lab page from Oct 28.
 
 ## 7b. Not built yet
 
@@ -576,13 +591,16 @@ The lab now uses the desk's slippage formula from section 5, so ticket-book doll
 - The Eye floor shows Eye and the four assistants, and a briefing line moves only while that assistant has a note.
 - A public map link uses the mint as `address` and `solana` as `chain`.
 - A bust refills to $50 and does not change the grind index.
+- A flat wallet with $4 to $5 free and fewer than 30 closes refills on the next scan instead of skipping every entry.
+- `python paper-scanner-lab/parity_check.py` prints `parity ok`, and `python paper-scanner-lab/selftest.py` prints `selftest ok`.
+- After a paper buy and sell, `/api/quotes` has one row for each, and coverage is at least 95% over a day.
 - A live queue is refused while `LAB_URL` or `LAB_KEY` is unset.
 - `round_trip_cost_usd(5.5, 10000)` returns 0.85, and the Book tab shows it in the Cost column.
 - A ledger with both local and UTC rows still produces the same win rate, report windows, and cooldowns.
 - Killing the process during a save leaves a readable JSON file.
 - The first scan of a UTC day writes `backups/<date>/.ok`, and `config.json` is not in that folder.
 - The stall warning appears when the scan is 6 minutes old, and disappears on the next good scan.
-- The lab report has `tickets` for 5.5, 8, and 12, and `baselines` for `hold-sol` and `buy-every-name`. `books` still has ten rows.
+- The lab report has twenty `books`, one `real_desk` row (`desk-ladder-real`), nine `tickets` (three entry rules at 5.5, 8, and 12), `baselines` for `hold-sol` and `buy-every-name`, `research`, `quotes`, and `verdict`.
 - A fresh image built from the root `Dockerfile` starts without an import error.
 
 ## 9. Out of scope

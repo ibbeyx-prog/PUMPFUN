@@ -5,6 +5,8 @@ It reads the desk API and writes only its own sqlite file. It does not trade
 and it does not open the desk's ledger, bank, config, or .env.
 """
 import calendar
+import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -1032,6 +1034,8 @@ def serve():
     threading.Thread(target=report_loop, args=(reader,), daemon=True).start()
     key = env("LAB_KEY")
     port = int(env("PORT", "8090") or "8090")
+    # The cookie holds a hash of the key, not the key, and changes when LAB_KEY changes.
+    session = hashlib.sha256(("lab-session:" + key).encode()).hexdigest() if key else ""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -1040,14 +1044,38 @@ def serve():
         def _ok_key(self):
             if not key:
                 return False
-            sent = self.headers.get("X-Lab-Key", "")
-            if sent == key:
+            if hmac.compare_digest(self.headers.get("X-Lab-Key", ""), key):
                 return True
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             for part in query.split("&"):
-                if part.startswith("key=") and urllib.parse.unquote(part.split("=", 1)[1]) == key:
+                if part.startswith("key=") and hmac.compare_digest(
+                        urllib.parse.unquote_plus(part.split("=", 1)[1]), key):
+                    return True
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == "lab_session" and hmac.compare_digest(value, session):
                     return True
             return False
+
+        def do_POST(self):
+            if self.path.split("?", 1)[0] != "/login":
+                self._send(404, "not found", "text/plain")
+                return
+            length = min(int(self.headers.get("Content-Length") or 0), 4096)
+            form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+            sent = (form.get("key") or [""])[0]
+            if not key or not hmac.compare_digest(sent, key):
+                time.sleep(1)
+                self._send(401, _login_page("Wrong key."), "text/html; charset=utf-8")
+                return
+            self.send_response(303)
+            self.send_header(
+                "Set-Cookie",
+                f"lab_session={session}; Max-Age={30 * 86400}; Path=/; HttpOnly; Secure; SameSite=Strict",
+            )
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _send(self, code, body, content):
             data = body.encode() if isinstance(body, str) else body
@@ -1063,7 +1091,11 @@ def serve():
                 self._send(200, "ok", "text/plain")
                 return
             if not self._ok_key():
-                self._send(401, "lab key required", "text/plain")
+                if path == "/api/report":
+                    self._send(401, "lab key required", "text/plain")
+                else:
+                    note = "" if key else "LAB_KEY is not set on this service, so every key is refused."
+                    self._send(401, _login_page(note), "text/html; charset=utf-8")
                 return
             with REPORT_LOCK:
                 report = cached_report(reader)
@@ -1079,6 +1111,34 @@ def serve():
     except KeyboardInterrupt:
         print("stopped")
         server.shutdown()
+
+
+def _login_page(note=""):
+    note_html = f'<p class="bad">{note}</p>' if note else ""
+    return f"""<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Scanner Lab</title>
+<style>
+  body {{ margin: 0; background: #10140f; color: #e7f0df; font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; }}
+  main {{ max-width: 360px; margin: 18vh auto 0; padding: 0 18px; }}
+  h1 {{ font-size: 22px; margin: 0 0 8px; }}
+  p {{ color: #9aab90; }}
+  .bad {{ color: #ff8a7a; }}
+  input, button {{ width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; border-radius: 10px; }}
+  input {{ background: #181e16; color: #e7f0df; border: 1px solid #2c3826; margin: 8px 0 12px; }}
+  button {{ background: #8fd16a; color: #10140f; border: 0; font-weight: 600; cursor: pointer; }}
+</style>
+<main>
+  <h1>Paper Scanner Lab</h1>
+  <p>Read-only. Enter the lab key (LAB_KEY on the scanner-lab service).</p>
+  {note_html}
+  <form method="post" action="/login">
+    <input type="password" name="key" autocomplete="current-password" autofocus required>
+    <button type="submit">Open the lab</button>
+  </form>
+</main>
+"""
 
 
 def _page(report):

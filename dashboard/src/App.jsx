@@ -26,7 +26,18 @@ const solToUsd = (solAmount, px) => {
   return n * price;
 };
 const tone = (n) => (n > 0 ? "text-emerald-300" : n < 0 ? "text-rose-300" : "text-slate-400");
-const when = (s) => (s ? String(s).replace("T", " ").replace("Z", "").slice(5, 16) : "");
+const MALDIVES = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Indian/Maldives", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+// Stamps without a zone were written on the server, which runs in UTC.
+const when = (s) => {
+  if (!s) return "";
+  const text = String(s).trim().replace(" ", "T");
+  const date = new Date(/(Z|[+-]\d\d:?\d\d)$/.test(text) ? text : `${text}Z`);
+  if (Number.isNaN(date.getTime())) return String(s).slice(5, 16);
+  const p = Object.fromEntries(MALDIVES.formatToParts(date).map((part) => [part.type, part.value]));
+  return `${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 const bubbleMapUrl = (c) => {
   const raw = c.bubble_url || `https://v2.bubblemaps.io/map?address=${c.mint}&chain=solana`;
   try {
@@ -471,7 +482,7 @@ export default function App() {
               <Shell title="Recent activity">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr>{["Time", "Event", "Token", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                    <tr>{["Time (MVT)", "Event", "Token", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                   </thead>
                   <tbody>
                     {trades.length === 0 && <Empty cols={7}>No activity yet.</Empty>}
@@ -551,7 +562,7 @@ export default function App() {
               </div>
             )}
 
-            <Shell title="Skills" hint={<span className="text-xs text-slate-500">{sum.skills?.updated ? `studied ${sum.skills.updated.slice(11, 16)}` : "waiting for a scan"}</span>}>
+            <Shell title="Skills" hint={<span className="text-xs text-slate-500">{sum.skills?.updated ? `studied ${when(sum.skills.updated).slice(6)}` : "waiting for a scan"}</span>}>
               <div className="px-4 py-3 text-sm text-slate-300">{sum.skills?.note || "The agent studies the next scan before it buys."}</div>
               <table className="w-full text-sm">
                 <thead>
