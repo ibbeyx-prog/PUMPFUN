@@ -226,6 +226,176 @@ function NowBar({ now }) {
   );
 }
 
+const ticketUsd = (note) => {
+  const m = /\$([\d.]+)/.exec(note || "");
+  return m ? Number(m[1]) : null;
+};
+
+const exitLabel = (note) => {
+  const n = (note || "").toLowerCase();
+  if (n.includes("stop")) return "stop-loss";
+  if (n.includes("ladder")) return note.replace(/^.*?(ladder\s*[\d.]+x).*$/i, "$1");
+  if (n.includes("early")) return "early cut";
+  if (n.includes("time")) return "time stop";
+  if (n.includes("liquid")) return "liquidity drop";
+  if (n.includes("vanish") || n.includes("gone")) return "vanished";
+  return note || "sell";
+};
+
+// Newest-first ledger rows -> one entry per position (BUY..SELL..CLOSED), skips folded per token.
+function groupActivity(trades) {
+  const positions = [];
+  const live = {};
+  const skips = {};
+  const resets = [];
+  for (const t of [...trades].reverse()) {
+    const mint = t.mint || "";
+    if (t.event === "RESET") {
+      resets.push(t);
+      continue;
+    }
+    if (t.event === "SKIP") {
+      const s = (skips[mint] ||= { mint, rows: [], first: t });
+      s.rows.push(t);
+      s.last = t;
+      continue;
+    }
+    if (t.event === "BUY") {
+      const p = { key: `${mint}-${t.time}`, mint, buy: t, sells: [], closed: null, events: [t], last: t };
+      positions.push(p);
+      live[mint] = p;
+      continue;
+    }
+    if (t.event === "SELL" || t.event === "CLOSED") {
+      let p = live[mint];
+      if (!p) {
+        p = { key: `${mint}-${t.time}-x`, mint, buy: null, sells: [], closed: null, events: [], last: t };
+        positions.push(p);
+        live[mint] = p;
+      }
+      p.events.push(t);
+      p.last = t;
+      if (t.event === "SELL") p.sells.push(t);
+      else {
+        p.closed = t;
+        delete live[mint];
+      }
+    }
+  }
+  const latestTime = (p) => p.last?.time || "";
+  positions.sort((a, b) => (latestTime(b) > latestTime(a) ? 1 : -1));
+  const skipList = Object.values(skips).sort((a, b) => (b.last.time > a.last.time ? 1 : -1));
+  return { positions, skipList, resets };
+}
+
+function ActivityRow({ p, pnlUsd }) {
+  const [openRow, setOpenRow] = useState(false);
+  const head = p.closed || p.last || p.buy;
+  const info = { ...(p.buy || {}), ...head, symbol: head.symbol || p.buy?.symbol, scan: head.scan || p.buy?.scan, now: head.now };
+  const invested = ticketUsd(p.buy?.note);
+  const realized = p.closed ? Number(p.closed.sol_pnl) : p.sells.reduce((a, s) => a + Number(s.sol_pnl || 0), 0);
+  const realizedUsd = pnlUsd(realized);
+  const net = Number(String(realizedUsd || "").replace(/[^0-9.-]/g, ""));
+  const pctOf = invested && realizedUsd ? (net / invested) : null;
+  const eyeTip = [...p.events].reverse().find((e) => e.eye)?.eye;
+  const status = p.closed ? "closed" : info.now ? "open" : p.buy ? "open" : "partial";
+  return (
+    <>
+      <tr className="cursor-pointer border-t border-white/[0.05] hover:bg-white/[0.03]" onClick={() => setOpenRow((v) => !v)}>
+        <td className="num whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-500">
+          <span className="mr-1 inline-block w-3 text-slate-600">{openRow ? "▾" : "▸"}</span>
+          {when(p.buy?.time || p.events[0]?.time)}
+        </td>
+        <td className="px-2 py-2.5 align-top"><TokenCell t={info} /></td>
+        <td className="px-2 py-2.5 align-top">
+          {status === "open" ? <NowBar now={info.now || { x: 1, left: 1, age_min: 0 }} /> : (
+            <span className={`rounded-full border px-2 py-0.5 text-[11px] ${p.closed ? "border-white/10 text-slate-400" : "border-amber-400/30 text-amber-200"}`}>
+              {p.closed ? `closed ${when(p.closed.time).slice(6)}` : "partly sold"}
+            </span>
+          )}
+        </td>
+        <td className="num whitespace-nowrap px-2 py-2.5 align-top text-slate-200">{invested ? `$${invested.toFixed(2)}` : "–"}</td>
+        <td className="num whitespace-nowrap px-2 py-2.5 align-top">
+          {p.closed || p.sells.length ? (
+            <>
+              <div className={`font-semibold ${tone(realized)}`}>{realizedUsd}</div>
+              {pctOf != null && <div className={`text-[11px] ${tone(realized)}`}>{(pctOf * 100).toFixed(0)}% of invested</div>}
+              {!p.closed && <div className="text-[11px] text-slate-500">realized so far</div>}
+            </>
+          ) : <span className="text-slate-600">–</span>}
+        </td>
+        <td className="px-2 py-2.5 align-top">
+          <div className="flex flex-wrap gap-1">
+            {p.sells.length === 0 && <span className="text-xs text-slate-600">no sells yet</span>}
+            {p.sells.map((s, i) => (
+              <span key={i} className={`rounded-full border px-2 py-0.5 text-[11px] ${Number(s.sol_pnl) >= 0 ? "border-emerald-400/30 text-emerald-200" : "border-rose-400/30 text-rose-200"}`}>
+                {exitLabel(s.note)} {Number(s.x) ? `${Number(s.x).toFixed(2)}X` : ""}
+              </span>
+            ))}
+          </div>
+        </td>
+        <td className="min-w-52 px-4 py-2.5 align-top"><Suggestion advice={eyeTip} /></td>
+      </tr>
+      {openRow && (
+        <tr className="bg-black/20">
+          <td colSpan={7} className="px-10 py-2">
+            <div className="space-y-1">
+              {p.events.map((e, i) => (
+                <div key={i} className="grid grid-cols-[90px_70px_70px_80px_1fr] gap-3 text-xs">
+                  <span className="num text-slate-500">{when(e.time)}</span>
+                  <span className={`font-semibold ${e.event === "BUY" ? "text-sky-300" : e.event === "SELL" ? "text-emerald-300" : "text-violet-300"}`}>{e.event}</span>
+                  <span className="num text-slate-400">{Number(e.x) ? `${Number(e.x).toFixed(2)}X` : ""}</span>
+                  <span className={`num ${tone(Number(e.sol_pnl))}`}>{Number(e.sol_pnl) ? pnlUsd(e.sol_pnl) : ""}</span>
+                  <span className="text-slate-500">{e.event === "CLOSED" ? "position total (includes the sells above and the buy fee)" : e.note}</span>
+                </div>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function ActivityFeed({ trades, pnlUsd }) {
+  const [showSkips, setShowSkips] = useState(false);
+  const { positions, skipList, resets } = groupActivity(trades);
+  const shown = positions.slice(0, 30);
+  return (
+    <div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr>{["Opened (MVT)", "Token", "Status", "Invested", "Result", "Exits", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+        </thead>
+        <tbody>
+          {shown.length === 0 && <Empty cols={7}>No trades yet.</Empty>}
+          {shown.map((p) => <ActivityRow key={p.key} p={p} pnlUsd={pnlUsd} />)}
+        </tbody>
+      </table>
+      <div className="flex flex-wrap items-center gap-3 border-t border-white/[0.06] px-4 py-2.5 text-xs text-slate-500">
+        <button className="rounded-lg border border-white/10 px-2.5 py-1 text-slate-300 hover:bg-white/[0.05]" onClick={() => setShowSkips((v) => !v)}>
+          {showSkips ? "Hide" : "Show"} skipped tokens ({skipList.length})
+        </button>
+        {resets.length > 0 && <span>Wallet refilled to $50 at {resets.slice(-3).map((r) => when(r.time)).join(", ")}</span>}
+      </div>
+      {showSkips && (
+        <table className="w-full text-sm">
+          <tbody>
+            {skipList.slice(0, 40).map((s) => (
+              <tr key={s.mint || "none"} className="border-t border-white/[0.05]">
+                <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{when(s.last.time)}</td>
+                <td className="px-2 py-2">{s.mint ? <TokenCell t={s.last} /> : <span className="text-slate-500">desk</span>}</td>
+                <td className="px-2 py-2 text-xs text-slate-400">skipped {s.rows.length}×</td>
+                <td className="px-2 py-2 text-xs text-slate-500">{s.last.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function Empty({ cols, children }) {
   return <tr><td colSpan={cols} className="px-4 py-8 text-sm text-slate-500">{children}</td></tr>;
 }
@@ -288,7 +458,7 @@ export default function App() {
     const tick = async () => {
       try {
         const [s, t, w, c, e] = await Promise.all([
-          get("/api/summary"), get("/api/trades?limit=100"), get("/api/wallets"), get("/api/candidates"), get("/api/eye"),
+          get("/api/summary"), get("/api/trades?limit=300"), get("/api/wallets"), get("/api/candidates"), get("/api/eye"),
         ]);
         if (!stop) { setSum(s); setTrades(t); setWallets(w); setCands(c); setEye(e); setErr(""); }
       } catch (e) {
@@ -538,27 +708,8 @@ export default function App() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="lg:col-span-2">
-              <Shell title="Recent activity" hint={<span className="text-xs text-slate-500">Now: live multiple for coins still open; bar runs from the 0.65X stop to the 2X first sell, tick at entry</span>}>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr>{["Time (MVT)", "Event", "Token", "Now", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {trades.length === 0 && <Empty cols={8}>No activity yet.</Empty>}
-                    {trades.slice(0, 40).map((t, i) => (
-                      <tr key={i} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
-                        <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{when(t.time)}</td>
-                        <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
-                        <td className="px-2 py-2"><TokenCell t={t} /></td>
-                        <td className="px-2 py-2">{t.mint ? <NowBar now={t.now} /> : null}</td>
-                        <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
-                        <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? pnlUsd(t.sol_pnl) : ""}</td>
-                        <td className="px-2 py-2 text-xs text-slate-500">{t.note}</td>
-                        <td className="min-w-52 px-4 py-2"><Suggestion advice={t.eye} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <Shell title="Recent activity" hint={<span className="text-xs text-slate-500">One row per trade. Click a row for its buy, sells, and close. Status bar: 0.65X stop to 2X first sell, tick at entry</span>}>
+                <ActivityFeed trades={trades} pnlUsd={pnlUsd} />
               </Shell>
               </div>
 
