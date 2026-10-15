@@ -179,6 +179,72 @@ function Th({ children }) {
   return <th className="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">{children}</th>;
 }
 
+const compactUsd = (n) => {
+  const v = Number(n);
+  if (!v) return null;
+  return v >= 1e6 ? `$${(v / 1e6).toFixed(1)}m` : v >= 1e3 ? `$${(v / 1e3).toFixed(0)}k` : `$${v.toFixed(0)}`;
+};
+
+const SOURCE_TONE = {
+  gmgn: "border-emerald-400/30 text-emerald-200",
+  dexscreener: "border-sky-400/30 text-sky-200",
+  birdeye: "border-amber-400/30 text-amber-200",
+  "pump.fun": "border-fuchsia-400/30 text-fuchsia-200",
+  fomo: "border-violet-400/30 text-violet-200",
+};
+
+function SourceChips({ sources }) {
+  if (!sources || sources.length === 0) return <span className="text-slate-600">–</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sources.map((s) => (
+        <span key={s} className={`rounded-full border px-1.5 py-px text-[10px] ${SOURCE_TONE[s] || "border-white/15 text-slate-300"}`}>{s}</span>
+      ))}
+    </div>
+  );
+}
+
+function TokenCell({ t }) {
+  const scan = t.scan || {};
+  const facts = [
+    scan.score != null ? `score ${Math.round(scan.score)}` : null,
+    compactUsd(scan.mcap) ? `mcap ${compactUsd(scan.mcap)}` : null,
+    compactUsd(scan.liq) ? `liq ${compactUsd(scan.liq)}` : null,
+    scan.change_5m != null ? `5m ${Number(scan.change_5m) > 0 ? "+" : ""}${Number(scan.change_5m).toFixed(0)}%` : null,
+  ].filter(Boolean);
+  if (!t.mint) return <span className="text-slate-600">–</span>;
+  return (
+    <div className="min-w-36">
+      <div className="flex items-center gap-2">
+        <a className="font-medium text-sky-300 hover:underline" target="_blank" rel="noreferrer" href={`https://dexscreener.com/solana/${t.mint}`} title="DexScreener chart">
+          {t.symbol || short(t.mint)}
+        </a>
+        <a className="text-[10px] text-slate-500 hover:text-slate-300" target="_blank" rel="noreferrer" href={`https://v2.bubblemaps.io/map?address=${t.mint}&chain=solana`} title="Holder map">map</a>
+      </div>
+      <div className="text-[10px] text-slate-500">{t.symbol ? short(t.mint) : ""}{facts.length ? `${t.symbol ? " · " : ""}${facts.join(" · ")}` : ""}</div>
+    </div>
+  );
+}
+
+function NowBar({ now }) {
+  if (!now) return <span className="text-xs text-slate-600">closed</span>;
+  const x = Number(now.x) || 0;
+  // Stop sits at 0.65X and the first ladder sell at 2X; the bar spans that range.
+  const at = Math.max(0, Math.min(1, (x - 0.65) / (2 - 0.65)));
+  const entry = (1 - 0.65) / (2 - 0.65);
+  return (
+    <div className="min-w-28">
+      <div className={`num text-xs font-medium ${x >= 1 ? "text-emerald-300" : "text-rose-300"}`}>
+        {x ? `${x.toFixed(2)}X` : "–"} <span className="font-normal text-slate-500">· {pct(now.left)} left · {Math.round(now.age_min || 0)}m</span>
+      </div>
+      <div className="relative mt-1 h-1.5 rounded-full bg-white/[0.06]" title="Stop 0.65X to first sell 2X">
+        <div className={`absolute inset-y-0 left-0 rounded-full ${x >= 1 ? "bg-emerald-400/70" : "bg-rose-400/70"}`} style={{ width: `${at * 100}%` }} />
+        <div className="absolute inset-y-[-2px] w-px bg-slate-300/60" style={{ left: `${entry * 100}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function Empty({ cols, children }) {
   return <tr><td colSpan={cols} className="px-4 py-8 text-sm text-slate-500">{children}</td></tr>;
 }
@@ -479,18 +545,21 @@ export default function App() {
             </Shell>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <Shell title="Recent activity">
+              <div className="lg:col-span-2">
+              <Shell title="Recent activity" hint={<span className="text-xs text-slate-500">Now: live multiple for coins still open; bar runs from the 0.65X stop to the 2X first sell, tick at entry</span>}>
                 <table className="w-full text-sm">
                   <thead>
-                    <tr>{["Time (MVT)", "Event", "Token", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                    <tr>{["Time (MVT)", "Event", "Token", "Source", "Now", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                   </thead>
                   <tbody>
-                    {trades.length === 0 && <Empty cols={7}>No activity yet.</Empty>}
+                    {trades.length === 0 && <Empty cols={9}>No activity yet.</Empty>}
                     {trades.slice(0, 40).map((t, i) => (
                       <tr key={i} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                         <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{when(t.time)}</td>
                         <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
-                        <td className="px-2 py-2 text-slate-300">{short(t.mint)}</td>
+                        <td className="px-2 py-2"><TokenCell t={t} /></td>
+                        <td className="px-2 py-2"><SourceChips sources={t.sources} /></td>
+                        <td className="px-2 py-2">{t.mint ? <NowBar now={t.now} /> : null}</td>
                         <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
                         <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? pnlUsd(t.sol_pnl) : ""}</td>
                         <td className="px-2 py-2 text-xs text-slate-500">{t.note}</td>
@@ -500,6 +569,7 @@ export default function App() {
                   </tbody>
                 </table>
               </Shell>
+              </div>
 
               <Shell title="Tracked wallets">
                 <table className="w-full text-sm">

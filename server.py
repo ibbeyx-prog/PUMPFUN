@@ -369,14 +369,44 @@ async def api_eye(request):
     return web.json_response(eye.public())
 
 
+def _buy_symbol(note):
+    """BUY notes read 'SYMBOL size X SOL · $Y phantom paper'. No symbol leaves the note starting with 'size'."""
+    head = (note or "").split(" size ", 1)[0].strip()
+    return "" if not head or head.startswith("size") or " " in head else head[:16]
+
+
 async def api_trades(request):
     limit = int(request.query.get("limit", 200))
     rows = eye.current_rows(read_trades())
     tips = eye.improvements(rows)
+    symbols = {}
+    for r in rows:
+        if r.get("event") == "BUY":
+            sym = _buy_symbol(r.get("note"))
+            if sym:
+                symbols[r.get("mint")] = sym
+    scan = {}
+    for c in scanner.STATE.get("candidates") or []:
+        mint = c.get("mint")
+        if not mint:
+            continue
+        scan[mint] = {k: c.get(k) for k in ("score", "decision", "mcap", "liq", "change_5m", "age_min")}
+        if c.get("symbol"):
+            symbols.setdefault(mint, c["symbol"])
+    held = {}
+    for mint, p in (ENG.pos if ENG else {}).items():
+        held[mint] = {"x": p.get("last_x"), "left": p.get("left"), "age_min": (time.time() - p["t0"]) / 60}
+        if p.get("symbol"):
+            symbols[mint] = p["symbol"]
     out = []
     for r in rows[-limit:][::-1]:
         item = dict(r)
+        mint = item.get("mint") or ""
         item["source"] = item.get("wallet") or ""
+        item["sources"] = [s for s in item["source"].split("+") if s]
+        item["symbol"] = symbols.get(mint, "")
+        item["now"] = held.get(mint)
+        item["scan"] = scan.get(mint)
         tip = eye.for_trade(item, tips)
         if tip:
             item["eye"] = tip
