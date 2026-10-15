@@ -185,25 +185,6 @@ const compactUsd = (n) => {
   return v >= 1e6 ? `$${(v / 1e6).toFixed(1)}m` : v >= 1e3 ? `$${(v / 1e3).toFixed(0)}k` : `$${v.toFixed(0)}`;
 };
 
-const SOURCE_TONE = {
-  gmgn: "border-emerald-400/30 text-emerald-200",
-  dexscreener: "border-sky-400/30 text-sky-200",
-  birdeye: "border-amber-400/30 text-amber-200",
-  "pump.fun": "border-fuchsia-400/30 text-fuchsia-200",
-  fomo: "border-violet-400/30 text-violet-200",
-};
-
-function SourceChips({ sources }) {
-  if (!sources || sources.length === 0) return <span className="text-slate-600">–</span>;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {sources.map((s) => (
-        <span key={s} className={`rounded-full border px-1.5 py-px text-[10px] ${SOURCE_TONE[s] || "border-white/15 text-slate-300"}`}>{s}</span>
-      ))}
-    </div>
-  );
-}
-
 function TokenCell({ t }) {
   const scan = t.scan || {};
   const facts = [
@@ -549,16 +530,15 @@ export default function App() {
               <Shell title="Recent activity" hint={<span className="text-xs text-slate-500">Now: live multiple for coins still open; bar runs from the 0.65X stop to the 2X first sell, tick at entry</span>}>
                 <table className="w-full text-sm">
                   <thead>
-                    <tr>{["Time (MVT)", "Event", "Token", "Source", "Now", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
+                    <tr>{["Time (MVT)", "Event", "Token", "Now", "Multiple", "PnL", "Note", "Eye"].map((h) => <Th key={h}>{h}</Th>)}</tr>
                   </thead>
                   <tbody>
-                    {trades.length === 0 && <Empty cols={9}>No activity yet.</Empty>}
+                    {trades.length === 0 && <Empty cols={8}>No activity yet.</Empty>}
                     {trades.slice(0, 40).map((t, i) => (
                       <tr key={i} className="border-t border-white/[0.05] hover:bg-white/[0.03]">
                         <td className="num whitespace-nowrap px-4 py-2 text-xs text-slate-500">{when(t.time)}</td>
                         <td className={`px-2 py-2 text-xs font-semibold ${t.event === "BUY" ? "text-sky-300" : t.event === "SELL" ? "text-emerald-300" : t.event === "CLOSED" ? "text-violet-300" : "text-slate-500"}`}>{t.event}</td>
                         <td className="px-2 py-2"><TokenCell t={t} /></td>
-                        <td className="px-2 py-2"><SourceChips sources={t.sources} /></td>
                         <td className="px-2 py-2">{t.mint ? <NowBar now={t.now} /> : null}</td>
                         <td className="num px-2 py-2 text-slate-400">{Number(t.x) ? `${t.x}X` : ""}</td>
                         <td className={`num px-2 py-2 ${tone(Number(t.sol_pnl))}`}>{Number(t.sol_pnl) ? pnlUsd(t.sol_pnl) : ""}</td>
