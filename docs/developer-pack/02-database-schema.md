@@ -280,7 +280,8 @@ create table tune_state (
   reviewed_closes   integer not null default 0,
   grind_index       integer not null default 0,
   strategy_locked   boolean not null default false,
-  lock_reason       text not null default ''
+  lock_reason       text not null default '',
+  entry_rule        text not null default ''   -- 'two-source' once ensure_entry_rule() has run
 );
 
 create table tune_change (
@@ -455,6 +456,8 @@ Files are written atomically today (temp file, then rename), and copied once per
 - At most one open `position` per mint, and at most one pending `live_order`.
 - `reserve_usd` is clamped to the closed interval from 3 to 5 before sizing.
 - A buy is refused when free USD above the reserve is under 4, or when the chosen size is under 4.
+- A refill (`RESET` plus a new `paper_run`) is allowed only when no `position` is open, the run has at least one `CLOSED` row, and the sizing rule returns under $4 for the next buy. The refill test and the sizing rule must be the same function, so no balance is left that can neither trade nor refill.
+- `tune_state.entry_rule = 'two-source'` is written once with three `tune_change` rows (`min_sources` 2, `entry_score` 65, `max_change_5m` 60). It is never written while `strategy_locked` is true.
 - `RESET` inserts a ledger row and a new `paper_run`, zeroes `realized_sol`, and deletes open positions. It does not change `live_guard.phantom_address`.
 - Strategy lock requires at least 50 sized `CLOSED` rows in the open run, a mean of `sol_pnl / buy size` above 0, and a 95% bootstrap lower bound above 0. Unsizable closes are excluded from that test.
 - Sizing before 30 closes is $5.50, or $5 when free cash is in `[$5, $5.50)`, else $0. After 30 closes, size uses the win rate of the latest 15 closes, still never above free cash and never under $4.
