@@ -21,7 +21,7 @@ PATH = os.path.join(ct.DATA, "eye_knowledge.json")
 LOCKED = {"budget_usd", "trade_usd", "reserve_usd", "one_trade_per_coin", "size_sol"}
 # Operator grant. Paper assistants only. None of them can spend, resize, or resume live trading.
 MAY_HIRE = True
-ALLOWED_POWERS = {"read_scan", "read_trades", "write_note", "halt_live"}
+ALLOWED_POWERS = {"read_scan", "read_trades", "read_lab", "write_note", "halt_live"}
 DENIED_NAMES = ("trade", "trader", "phantom", "spend", "spender", "size", "sizer", "wallet", "budget", "live")
 ROSTER = (
     {
@@ -33,6 +33,11 @@ ROSTER = (
         "name": "Scan watch",
         "job": "Reads the scan for Eye and puts the strongest names in front of it.",
         "powers": ["read_scan", "write_note"],
+    },
+    {
+        "name": "Scout",
+        "job": "Researches the Lab books and the closed paper book, then tells Eye which strategy looks closest to profitable.",
+        "powers": ["read_lab", "read_trades", "write_note"],
     },
     {
         "name": "Scribe",
@@ -206,6 +211,31 @@ def _research_prompt():
     )
 
 
+def _strategy_research_prompt():
+    """Scout's AI brief: find a profitable paper strategy from Lab + desk evidence."""
+    brief = live.lab_brief() or {}
+    book = _book_stats(_closed_rows())
+    wr = "n/a" if book["wr"] is None else f"{book['wr']:.0%}"
+    pnl = ", ".join(f"{k}-src {v:+.3f} SOL" for k, v in sorted((book.get("pnl") or {}).items()))
+    lab_text = brief.get("text") or "Lab brief not loaded yet."
+    picks = ", ".join(str(x) for x in (brief.get("frozen_picks") or [])[:5]) or "none"
+    return (
+        "You are Scout, Eye's strategy researcher on a Solana meme-coin PAPER desk. "
+        "Eye's job is to find a profitable paper strategy. You only propose; Eye decides. "
+        "Never suggest live trading, private keys, changing budget, trade size, or reserve. "
+        "Prefer Lab and desk numbers over opinions. If the sample is thin, say so. "
+        f"Desk book: {book['n']} closes, win rate {wr}, fades {book['fades']:.0%}, pnl by sources [{pnl or 'n/a'}]. "
+        f"Lab: verdict {brief.get('verdict') or 'n/a'}, phase {brief.get('phase') or 'n/a'}, "
+        f"paying buckets {', '.join(brief.get('paying_buckets') or []) or 'n/a'}, "
+        f"losing buckets {', '.join(brief.get('losing_buckets') or []) or 'n/a'}, "
+        f"picks {picks}. {lab_text} "
+        "Reply with JSON only, no markdown: "
+        '{"notes":[{"text":"...","source":"lab|desk|web"}]} '
+        "with 4 to 6 concrete strategy tips (entry score, sources, early cut, pause, timing, ticket). "
+        "Each text under 240 characters."
+    )
+
+
 def _review_prompt(knowledge):
     lines = [f"- ({n.get('src')}) {n.get('text')}" for n in knowledge[:15]]
     joined = "\n".join(lines) or "- none yet"
@@ -226,6 +256,7 @@ def _review_prompt(knowledge):
 
 
 async def research(session=None, complete=None):
+    """AI research pass. Prefers Scout's strategy prompt once the Lab or desk has evidence."""
     data = _load()
     now = time.time()
     if data.get("last_research") and now < float(data.get("next_research") or 0):
@@ -234,22 +265,31 @@ async def research(session=None, complete=None):
         data["next_research"] = now + 3600
         _save(data)
         return data
+    if session is not None:
+        try:
+            await live.refresh_lab(session)
+        except Exception:
+            pass
+    use_strategy = bool(live.lab_brief()) or len(_closed_rows()) >= 30
+    prompt = _strategy_research_prompt() if use_strategy else _research_prompt()
     try:
         if complete:
-            raw = await complete(_research_prompt())
+            raw = await complete(prompt)
         else:
-            raw = await _anthropic(session, _research_prompt(), True)
+            raw = await _anthropic(session, prompt, True)
         parsed = _parse_json(raw)
         found = parsed.get("notes") or []
         if not (4 <= len(found) <= 6):
             raise ValueError("expected 4 to 6 notes")
         for item in found:
-            add_note("web", item.get("text"), item.get("source") or "")
+            src = item.get("source") or ("scout" if use_strategy else "")
+            add_note("web", item.get("text"), src)
         data = _load()
         data["last_research"] = now
         data["next_research"] = now + HOURS * 3600
         _save(data)
-        print(f"LEARNED {len(found)} market notes")
+        kind = "strategy" if use_strategy else "market"
+        print(f"LEARNED {len(found)} {kind} notes")
     except Exception as e:
         data = _load()
         data["next_research"] = time.time() + 3600
@@ -418,10 +458,17 @@ def improvements(rows=None):
             "text": f"{len(fades)} of {n} closes lost before 1x. Sell under 0.8x after 10 minutes instead of holding to the full stop.",
         })
     if len(wins) / n < 0.25:
+        bar = 85 if len(wins) / n < 0.18 else 70
         recs.append({
             "id": "score",
             "label": "Raise the bar",
-            "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of 70.",
+            "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of {bar}.",
+        })
+    if len(fades) / n >= 0.55 and tune.value("early_cut_x", None) is not None:
+        recs.append({
+            "id": "cut_harder",
+            "label": "Cut faster",
+            "text": f"{len(fades)} of {n} closes still fade under 1x. Cut at 0.75x after 8 minutes.",
         })
     ladder = [r for r in wins if "ladder" in (r.get("note") or "")]
     if wins and len(ladder) / len(wins) >= 0.4:
@@ -430,13 +477,20 @@ def improvements(rows=None):
             "label": "Let winners run",
             "text": f"{len(ladder)} of {len(wins)} winners paid on the ladder. Hold a trade above entry and sell into 2x, 3.5x, and 5x.",
         })
+    paused = tune.value("max_new_entries_per_scan", 1) == 0
+    if n >= tune.REVIEW_CLOSES and len(wins) / n < 0.18 and not paused:
+        recs.append({
+            "id": "pause",
+            "label": "Trade less",
+            "text": f"Only {len(wins) / n:.0%} of {n} closes won after a tight book. Pause new paper entries until the last 15 win 25%.",
+        })
     if not recs:
         recs.append({
             "id": "steady",
             "label": "Keep the book",
             "text": f"{len(wins)} of {n} closes won. No rule change stands out from this book.",
         })
-    return recs[:4]
+    return recs[:5]
 
 
 def _pick(recs, *ids):
@@ -679,17 +733,24 @@ def strategy_line():
     if tune.locked():
         return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
     data = tune._load()
-    if data.get("entry_rule") == tune.ENTRY_RULE_ID:
-        v = data.get("values") or {}
-        return (
-            f"Two-source paper entry: {int(v.get('min_sources', 2))} sources, score {int(v.get('entry_score', 65))} "
-            f"or more, 5-minute move up to {int(v.get('max_change_5m', 60))}%. "
-            "A bust does not change it. The Lab's shadow books have to name a winner first."
-        )
-    number = int(data.get("grind") or 0) % len(PRESETS) + 1
+    v = data.get("values") or {}
+    sources = int(v.get("min_sources", 2 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 1))
+    score = int(v.get("entry_score", 65 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 60))
+    chase = int(v.get("max_change_5m", 60 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 90))
+    paused = v.get("max_new_entries_per_scan") == 0
+    cut = v.get("early_cut_x")
+    bits = [
+        f"{sources} sources",
+        f"score {score} or more",
+        f"5-minute move up to {chase}%",
+    ]
+    if cut is not None:
+        bits.append(f"early cut {float(cut):g}x after {int(v.get('early_cut_min') or 10)}m")
+    if paused:
+        bits.append("new entries paused")
     return (
-        f"Keeping strategy {number} of {len(PRESETS)}. "
-        "A bust does not rotate presets. The Lab's shadow books have to name a winner first."
+        f"Paper entry: {', '.join(bits)}. "
+        "A bust does not rotate the book. The Lab's shadow books have to name a winner first."
     )
 
 
@@ -734,51 +795,266 @@ def tend_wallet(eng):
     return did
 
 
-def _grow_once(ids, recent, market):
-    """Move at most one paper rule. Never touches budget, size, or live trading."""
+def _book_stats(closed):
+    """Full-run lookback used when Eye decides the next paper rule."""
+    n = len(closed)
+    if not n:
+        return {"n": 0, "wr": None, "fades": 0, "by": {}, "pnl": {}}
+    fades = sum(1 for r in closed if _num(r, "sol_pnl") < 0 and _num(r, "x") < 1)
+    by, pnl = {}, {}
+    for r in closed:
+        k = _sources(r)
+        by.setdefault(k, []).append(_num(r, "sol_pnl"))
+    for k, xs in by.items():
+        pnl[k] = sum(xs)
+    wins = sum(1 for r in closed if _num(r, "sol_pnl") > 0)
+    return {"n": n, "wr": wins / n, "fades": fades / n, "by": by, "pnl": pnl}
+
+
+def lab_improvements(brief=None):
+    """What the Lab research brief says to change. Empty when the lab has not been read."""
+    brief = brief if brief is not None else live.lab_brief()
+    if not brief:
+        return []
+    recs = []
+    verdict = brief.get("verdict")
+    if verdict in ("No edge", "Costs only"):
+        recs.append({
+            "id": "lab_pause",
+            "label": "Lab: trade less",
+            "text": f"Lab verdict {verdict}. {brief.get('verdict_why') or 'Pause new paper entries.'}"[:220],
+        })
+    if brief.get("regime_pause"):
+        recs.append({
+            "id": "lab_pause",
+            "label": "Lab: market cold",
+            "text": brief.get("regime_why") or "Lab says the 24h 2x share is in its cold quarter.",
+        })
+    paying, losing = set(brief.get("paying_buckets") or []), set(brief.get("losing_buckets") or [])
+    if "80+" in paying and losing & {"under 60", "60–69", "70–79"}:
+        recs.append({
+            "id": "lab_score",
+            "label": "Lab: score 80+",
+            "text": "Lab score edges: 80+ pays after costs; lower buckets do not. Pass names under 80.",
+        })
+    elif "70–79" in paying and losing & {"under 60", "60–69"}:
+        recs.append({
+            "id": "lab_score",
+            "label": "Lab: score 70+",
+            "text": "Lab score edges: 70–79 pays; weaker scores do not. Pass names under 70.",
+        })
+    tops = brief.get("top_books") or []
+    lead = tops[0] if tops else None
+    if lead and str(lead.get("id") or "").endswith("-cut") and (lead.get("n") or 0) >= 3:
+        recs.append({
+            "id": "lab_cut",
+            "label": "Lab: cut fast",
+            "text": f"Lab top book {lead.get('id')} (n={lead.get('n')}). Prefer a fast early cut over holding to the full stop.",
+        })
+    if verdict == "Edge found" and brief.get("frozen_picks"):
+        recs.append({
+            "id": "lab_adopt",
+            "label": "Lab: edge found",
+            "text": "Lab frozen picks: " + ", ".join(str(x) for x in brief["frozen_picks"][:3]) + ". Copy their entry/exit shape onto the paper rules.",
+        })
+    if brief.get("stop_rule") and "stop" in str(brief.get("stop_rule")).lower():
+        recs.append({
+            "id": "lab_stop",
+            "label": "Lab: stop rule",
+            "text": str(brief["stop_rule"])[:220],
+        })
+    # Dedupe by id, keep first.
+    seen, out = set(), []
+    for r in recs:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        out.append(r)
+    return out[:4]
+
+
+def _score_floor_from_lab(brief):
+    paying = set((brief or {}).get("paying_buckets") or [])
+    losing = set((brief or {}).get("losing_buckets") or [])
+    if "80+" in paying and losing & {"under 60", "60–69", "70–79"}:
+        return 80
+    if "70–79" in paying and losing & {"under 60", "60–69"}:
+        return 70
+    return None
+
+
+def _grow_from_lab(brief, ids):
+    """Apply at most one paper rule from the Lab research brief."""
+    if not brief:
+        return ""
+    paused = tune.value("max_new_entries_per_scan", 1) == 0
+    verdict = brief.get("verdict")
+
+    if (verdict in ("No edge", "Costs only") or brief.get("regime_pause") or "lab_pause" in ids) and not paused:
+        why = brief.get("verdict_why") or brief.get("regime_why") or f"Lab verdict {verdict}"
+        if _apply("max_new_entries_per_scan", 0, f"Eye from Lab: {why}"[:160]):
+            return f"Paused new paper entries. Lab: {verdict or 'market cold'}."
+
+    floor = _score_floor_from_lab(brief)
+    if floor is not None and ("lab_score" in ids or floor >= 80) and _current("entry_score", 60) < floor:
+        if _apply("entry_score", floor,
+                  f"Eye from Lab score edges: pay {', '.join(brief.get('paying_buckets') or [])}; "
+                  f"lose {', '.join(brief.get('losing_buckets') or [])}."[:160]):
+            return f"Raised the entry score to {floor} from Lab score edges."
+
+    tops = brief.get("top_books") or []
+    lead = tops[0] if tops else None
+    if (lead and str(lead.get("id") or "").endswith("-cut") and (lead.get("n") or 0) >= 3
+            and ("lab_cut" in ids or (lead.get("paired") or 0) > 0 or (lead.get("mean") or 0) > 0)):
+        cut = tune.value("early_cut_x", None)
+        if cut is None:
+            moved = _apply("early_cut_x", 0.80, f"Eye from Lab: top book {lead.get('id')} is a fast cut.")
+            _apply("early_cut_min", 10, "Eye from Lab: wait 10 minutes before that early cut.")
+            if moved:
+                return f"Turned on the early cut from Lab book {lead.get('id')}."
+        elif float(cut) > 0.75:
+            moved = _apply("early_cut_x", 0.75, f"Eye from Lab: top book {lead.get('id')} beats slower exits.")
+            _apply("early_cut_min", 8, "Eye from Lab: wait 8 minutes before that harder early cut.")
+            if moved:
+                return f"Tightened the early cut to 0.75x from Lab book {lead.get('id')}."
+
+    if verdict == "Edge found" and ("lab_adopt" in ids or brief.get("frozen_picks")):
+        pick = str((brief.get("frozen_picks") or [""])[0])
+        if "strict" in pick and _current("min_sources", 1) < 3:
+            if _apply("min_sources", 3, f"Eye from Lab frozen pick {pick}: require 3 sources."):
+                return f"Raised min sources to 3 from Lab pick {pick}."
+        if "cut" in pick:
+            cut = tune.value("early_cut_x", None)
+            if cut is None or float(cut) > 0.75:
+                moved = _apply("early_cut_x", 0.75, f"Eye from Lab frozen pick {pick}.")
+                _apply("early_cut_min", 8, "Eye from Lab: wait 8 minutes before that early cut.")
+                if moved:
+                    return f"Set the early cut from Lab pick {pick}."
+        if pick.startswith("loose") or pick.startswith("looser"):
+            # Do not loosen a cold desk; only adopt a higher score floor from lab edges.
+            floor = _score_floor_from_lab(brief) or 70
+            if _current("entry_score", 60) < floor:
+                if _apply("entry_score", floor, f"Eye from Lab frozen pick {pick}: keep the score floor."):
+                    return f"Raised the entry score to {floor} from Lab pick {pick}."
+    return ""
+
+
+def _grow_once(ids, recent, market, brief=None):
+    """Move at most one paper rule from Lab research and the full closed book. Never touches budget, size, or live trading."""
     held = _maybe_lock()
     if held:
         return held
-    n = len(recent)
-    if len(_closed_rows()) < tune.REVIEW_CLOSES:
-        chase = market["chasing"] / market["names"] if market["names"] else 0
+    closed = _closed_rows()
+    book = _book_stats(closed)
+    n_recent = len(recent)
+    recent_wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n_recent) if n_recent else None
+    chase = market["chasing"] / market["names"] if market["names"] else 0
+    paused = tune.value("max_new_entries_per_scan", 1) == 0
+
+    # Lab research can move a rule even before the desk hits REVIEW_CLOSES.
+    lab_did = _grow_from_lab(brief, ids)
+    if lab_did:
+        return lab_did
+
+    if book["n"] < tune.REVIEW_CLOSES:
         if chase >= 0.4 and _current("max_change_5m", 90) > 40:
             nxt = _current("max_change_5m", 90) - 5
             if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
                 return f"Tightened the 5-minute chase cap to {int(nxt)}%."
-        wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n) if n else 0
-        if n:
-            return f"Kept the rules. The last {n} closes won {wr:.0%}. A rule change waits for {tune.REVIEW_CLOSES} closes."
+        if n_recent:
+            return (
+                f"Kept the rules. The last {n_recent} closes won {recent_wr:.0%}. "
+                f"A rule change waits for {tune.REVIEW_CLOSES} closes"
+                + ("" if brief else " (Lab brief not loaded yet)")
+                + "."
+            )
         return "Kept the rules. Not enough closes to move one."
-    wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
-    wr = (wins / n) if n else 0
-    chase = market["chasing"] / market["names"] if market["names"] else 0
-    if ("sources" in ids or "one_source" in ids) and _current("min_sources", 1) < 3:
-        if _apply("min_sources", 3, "Eye: one- and two-source closes are not paying."):
+
+    # Resume a paused book before any other change.
+    if paused and recent_wr is not None and recent_wr >= 0.25 and n_recent >= 10:
+        if _apply("max_new_entries_per_scan", 1,
+                  f"Eye lookback: last {n_recent} closes won {recent_wr:.0%}. Open one paper entry per scan again."):
+            return f"Resumed paper entries. The last {n_recent} closes won {recent_wr:.0%}."
+        return f"New paper entries stay paused. The last {n_recent} closes won {recent_wr:.0%}."
+
+    two = book["by"].get(2) or []
+    two_wr = (sum(1 for x in two if x > 0) / len(two)) if two else None
+    two_pnl = book["pnl"].get(2, 0.0)
+    if (("sources" in ids or "one_source" in ids)
+            and _current("min_sources", 1) < 3
+            and two_wr is not None and two_wr < 0.35 and two_pnl <= 0):
+        if _apply("min_sources", 3,
+                  f"Eye lookback: 2-source closes won {two_wr:.0%} of {len(two)} and lost {two_pnl:+.3f} SOL."):
             return "Raised min sources to 3."
-    if "score" in ids and _current("entry_score", 60) < 70:
-        if _apply("entry_score", 70, "Eye: too few closes are winning. Pass weaker scores."):
-            return "Raised the entry score to 70."
-    if "cut" in ids and tune.value("early_cut_x", None) is None:
-        moved = _apply("early_cut_x", 0.8, "Eye: most closes lose before 1x. Cut the fade.")
-        _apply("early_cut_min", 10, "Eye: wait 10 minutes before that early cut.")
-        if moved:
-            return "Turned on the 0.8x early cut."
+
+    if book["fades"] >= 0.55 and ("cut" in ids or "cut_harder" in ids):
+        cut = tune.value("early_cut_x", None)
+        if cut is None:
+            moved = _apply("early_cut_x", 0.8, "Eye lookback: most closes lose before 1x. Cut the fade.")
+            _apply("early_cut_min", 10, "Eye: wait 10 minutes before that early cut.")
+            if moved:
+                return "Turned on the 0.8x early cut."
+        elif float(cut) > 0.75:
+            moved = _apply("early_cut_x", 0.75,
+                           f"Eye lookback: {book['fades']:.0%} of {book['n']} closes fade under 1x. Cut harder.")
+            _apply("early_cut_min", 8, "Eye: wait 8 minutes before that harder early cut.")
+            if moved:
+                return "Tightened the early cut to 0.75x after 8 minutes."
+
     if chase >= 0.4 and _current("max_change_5m", 90) > 40:
         nxt = _current("max_change_5m", 90) - 5
         if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
             return f"Tightened the 5-minute chase cap to {int(nxt)}%."
+
+    tight = (
+        _current("min_sources", 1) >= 3
+        and _current("entry_score", 60) >= 80
+        and tune.value("early_cut_x", None) is not None
+    )
+    # A tight cold book pauses before climbing the score any further.
+    if (not paused and tight and book["wr"] is not None and book["wr"] < 0.18
+            and (recent_wr is None or recent_wr < 0.15)
+            and ("pause" in ids or book["wr"] < 0.16 or _current("entry_score", 60) >= 85)):
+        if _apply("max_new_entries_per_scan", 0,
+                  f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won after a tight book. Pause new entries."):
+            return (
+                f"Paused new paper entries. {book['n']} closes won {book['wr']:.0%} "
+                f"(last {n_recent} won {recent_wr:.0%}). Resume when the last 15 win 25%."
+            )
+
+    if book["wr"] is not None and book["wr"] < 0.20 and ("score" in ids or book["wr"] < 0.18):
+        score = _current("entry_score", 60)
+        if book["wr"] < 0.18 and score < 85:
+            target = 85
+        elif score < 70:
+            target = 70
+        elif score < 85 and recent_wr is not None and recent_wr < 0.15:
+            target = min(85, score + 5)
+        else:
+            target = None
+        if target is not None and score < target:
+            if _apply("entry_score", target,
+                      f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won. Ask for score {target}."):
+                return f"Raised the entry score to {int(target)}."
+
     floor = 70 if "score" in ids else 55
-    if n >= 8 and wr < 0.2 and _current("entry_score", 60) < 80:
-        nxt = _current("entry_score", 60) + 5
-        if _apply("entry_score", nxt, f"Eye: the last {n} closes won {wr:.0%}. Ask for a higher score."):
-            return f"Raised the entry score to {int(nxt)}."
-    if n >= 8 and wr >= 0.45 and chase < 0.25 and not tool_rules()["hostile"] and _current("entry_score", 60) > floor:
+    if (n_recent >= 8 and recent_wr is not None and recent_wr >= 0.45 and chase < 0.25
+            and not tool_rules()["hostile"] and _current("entry_score", 60) > floor):
         nxt = _current("entry_score", 60) - 5
-        if _apply("entry_score", max(floor, nxt), f"Eye: the last {n} closes won {wr:.0%}. Allow a slightly lower score."):
+        if _apply("entry_score", max(floor, nxt),
+                  f"Eye: the last {n_recent} closes won {recent_wr:.0%}. Allow a slightly lower score."):
             return f"Lowered the entry score toward {int(max(floor, nxt))}."
-    if n:
-        return f"Kept the rules. The last {n} closes won {wr:.0%}."
+
+    if paused:
+        return (
+            f"New paper entries stay paused. Full book {book['wr']:.0%} of {book['n']}; "
+            f"last {n_recent} won {recent_wr:.0%}. Need 25% on the last 15 to resume."
+        )
+    if n_recent:
+        return (
+            f"Kept the rules after lookback. Full book {book['wr']:.0%} of {book['n']} won; "
+            f"last {n_recent} won {recent_wr:.0%}."
+        )
     return "Kept the rules. Not enough recent closes to move one."
 
 
@@ -805,6 +1081,7 @@ def _remember(market, did, recent):
     wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
     data["market"] = market["text"]
     data.setdefault("growth", [])
+    brief = live.lab_brief() or {}
     data["growth"].insert(0, {
         "time": deskio.stamp(),
         "closes": len(_closed_rows()),
@@ -813,23 +1090,40 @@ def _remember(market, did, recent):
         "equity_usd": _equity_usd(),
         "did": did[:180],
         "market": market["text"][:180],
+        "lab": brief.get("verdict") or "",
+        "lab_phase": brief.get("phase") or "",
     })
     data["growth"] = data["growth"][:30]
     _save(data)
 
 
 async def grow(session=None):
-    """One self-growth pass. Paper trades only. Does not resume live trading."""
+    """One self-growth pass. Paper trades only. Does not resume live trading.
+
+    Loads the Lab research brief first, writes it into Eye's notes, then moves at most
+    one paper rule from Lab findings and the desk's own closed book.
+    """
+    if session is not None:
+        try:
+            await live.refresh_lab(session)
+        except Exception:
+            pass
+    brief = live.lab_brief()
     market = await _read_market(session)
     recent = _closed_rows()[-15:]
-    did = _grow_once({r["id"] for r in improvements()}, recent, market)
+    ids = {r["id"] for r in improvements()} | {r["id"] for r in lab_improvements(brief)}
+    did = _grow_once(ids, recent, market, brief=brief)
     if tool_rules()["late_copy"]:
         did = did.rstrip() + " Web search says a smart-wallet copy arrives late, so those wallets do not add score."
+    if brief and brief.get("text"):
+        add_note("web", brief["text"], "lab")
     add_note("web", market["text"], "dexscreener")
     add_note("trades", did, "own trades")
     briefed = [a.get("name") for a in (_load().get("assistants") or []) if a.get("last")]
     if briefed:
         did = did.rstrip() + " " + ", ".join(briefed) + " briefed Eye first."
+    if brief and brief.get("verdict"):
+        did = did.rstrip() + f" Lab brief: {brief['verdict']}."
     _remember(market, did, recent)
     print("EYE", did)
     return _load()
@@ -880,10 +1174,62 @@ def _scan_state():
         return [], {}
 
 
+def _scout_text():
+    """Scout: Lab + closed book → one strategy brief for Eye."""
+    brief = live.lab_brief()
+    book = _book_stats(_closed_rows())
+    n, wr = book["n"], book["wr"]
+    if not brief and n < 5:
+        return (
+            "Eye, I am Scout. I research strategies for you. "
+            "The Lab brief is not loaded yet and the book is still short, so I have no edge to propose."
+        )
+    bits = ["Eye, I researched the Lab and the book for a strategy that can pay."]
+    if n:
+        bits.append(f"Desk: {n} closes won {wr:.0%}." if wr is not None else f"Desk: {n} closes.")
+        by_pnl = book.get("pnl") or {}
+        if by_pnl:
+            best = max(by_pnl.items(), key=lambda kv: kv[1])
+            worst = min(by_pnl.items(), key=lambda kv: kv[1])
+            bits.append(f"{best[0]}-source pnl {best[1]:+.3f} SOL, {worst[0]}-source {worst[1]:+.3f} SOL.")
+    if brief:
+        bits.append(f"Lab verdict {brief.get('verdict') or 'n/a'} ({brief.get('phase') or 'n/a'}).")
+        paying = brief.get("paying_buckets") or []
+        losing = brief.get("losing_buckets") or []
+        if paying or losing:
+            bits.append(
+                "Score edges pay " + (", ".join(paying) or "none")
+                + "; lose " + (", ".join(losing) or "none") + "."
+            )
+        tops = brief.get("top_books") or []
+        if tops and tops[0].get("id"):
+            lead = tops[0]
+            bits.append(f"Top Lab book {lead.get('id')} n={lead.get('n')} mean={lead.get('mean')}.")
+        timing = brief.get("timing_best")
+        if timing:
+            bits.append(
+                f"Best timing so far {timing.get('entry')} on {timing.get('group')} "
+                f"(n={timing.get('n')}, mean {timing.get('mean'):+.2f})."
+            )
+        picks = brief.get("frozen_picks") or []
+        if picks:
+            bits.append("Lab picks: " + ", ".join(str(x) for x in picks[:3]) + ".")
+        if brief.get("verdict") in ("No edge", "Costs only") or (wr is not None and wr < 0.18 and n >= 100):
+            bits.append("I would pause new entries and wait for a Lab winner or a warmer book.")
+        elif "80+" in paying:
+            bits.append("I would keep score 80+, cut fades fast, and ignore weaker scores.")
+        elif tops and str(tops[0].get("id") or "").endswith("-cut"):
+            bits.append("I would copy the fast-cut exit while the Lab sample is still early.")
+    bits.append("You decide. I do not spend or arm the wallet.")
+    return " ".join(bits)
+
+
 def _assist_text(agent):
     """A briefing for Eye, written the way a staff assistant would."""
     powers = set(agent.get("powers") or [])
     names, sources = _scan_state()
+    if agent.get("name") == "Scout" or "read_lab" in powers:
+        return _scout_text()
     if agent.get("name") == "Vet":
         rug = sources.get("rugcheck") or {}
         bubble = sources.get("bubblemap") or {}
@@ -967,11 +1313,13 @@ def staff():
 
 def public():
     data = _load()
+    brief = live.lab_brief()
     return {
         "knowledge": data["notes"][:12],
-        "improvements": improvements(),
+        "improvements": (improvements() + lab_improvements(brief))[:6],
         "growth": (data.get("growth") or [])[:8],
         "market": data.get("market") or "",
+        "lab": brief,
         "trading": True,
         "paper": True,
         "may_hire": MAY_HIRE,

@@ -42,9 +42,9 @@ Sample gates, each unlocking a different action:
 | Paper engine | System | Scans, scores, opens and manages simulated positions, writes the ledger. |
 | Phantom signer | Operator, in the browser | Holds the key. Signs a Jupiter swap only after an explicit Approve click. |
 
-Desk cards (Chief, Scan, Vet, Social, Size, Fills, Risk, Crawler) are a display of current state. They are not extra logins. Social stays off because X and Telegram are not connected. The Eye floor under those cards is the same four assistants at work. It is not a fifth login.
+Desk cards (Chief, Scan, Vet, Social, Size, Fills, Risk, Crawler) are a display of current state. They are not extra logins. Social stays off because X and Telegram are not connected. The Eye floor under those cards is the same five assistants at work (Vet, Scan watch, Scout, Scribe, Risk). It is not a sixth login.
 
-Hiring rejects any assistant whose name contains trade, trader, phantom, spend, spender, size, sizer, wallet, budget, or live. Allowed powers are only `read_scan`, `read_trades`, `write_note`, and `halt_live`. The roster caps at the four assistants above.
+Hiring rejects any assistant whose name contains trade, trader, phantom, spend, spender, size, sizer, wallet, budget, or live. Allowed powers are only `read_scan`, `read_trades`, `read_lab`, `write_note`, and `halt_live`. The roster caps at the five assistants above. Scout’s job is strategy research from the Lab brief and the closed book; the AI research pass uses Scout’s strategy prompt once the Lab or desk has evidence.
 
 ## 3. Screens
 
@@ -90,7 +90,7 @@ Eye floor, directly under the cards:
 
 | Piece | What it shows |
 | --- | --- |
-| Header | Phase, last paper pick, and how many of the four assistants are briefing |
+| Header | Phase, last paper pick, and how many of the five assistants are briefing |
 | Eye | Boss station. Latest growth sentence, otherwise the strategy line |
 | Vet, Scan watch, Scribe, Risk | A station each. A line to Eye while that assistant has a briefing. Waiting stations stay dim |
 | Goal, on the Agent tab | “A paper book that pays.” The written briefs, market sentence, and strategy sit under the same diagram |
@@ -171,7 +171,7 @@ One row per completed 24-hour window: start, end, closed count, win rate, SOL Pn
 
 | Block | Contents |
 | --- | --- |
-| Eye desk | Goal, Eye as boss, and the four briefing cards. Same staff as the floor, with the full note on each card |
+| Eye desk | Goal (find a profitable paper strategy), Eye as boss, and the five briefing cards. Same staff as the floor, with the full note on each card |
 | Agent read | Lesson from the current run once five closes exist |
 | Skills | Eight fixed paper checks and when they were last studied |
 | Eye | Growth history, improvement tips, learned notes. The written strategy and briefs are on the desk above |
@@ -472,7 +472,7 @@ When 24 hours have elapsed since the book origin, or since the previous report, 
 
 ### 6.7 Eye floor
 
-On each staff pass, Vet, Scan watch, Scribe, and Risk each write one note if their text changed. The main screen draws those four as stations under Eye. The Agent tab draws the same staff with the goal “A paper book that pays” and the full briefing text. A station with an empty note is Waiting.
+On each staff pass, Vet, Scan watch, Scout, Scribe, and Risk each write one note if their text changed. The main screen draws those five as stations under Eye. The Agent tab draws the same staff with the goal “Find a profitable paper strategy” and the full briefing text. A station with an empty note is Waiting.
 
 ### 6.8 Paper Scanner Lab
 
@@ -588,7 +588,7 @@ The lab now uses the desk's slippage formula from section 5, so ticket-book doll
 - Five wrong lock codes halt live trading. Eye cannot clear that halt.
 - Refill writes `RESET`, sets realized SOL to 0, and does not change a linked Phantom address.
 - The dashboard token, PIN, and API keys are absent from API responses and from the git commit of these documents.
-- The Eye floor shows Eye and the four assistants, and a briefing line moves only while that assistant has a note.
+- The Eye floor shows Eye and the five assistants, and a briefing line moves only while that assistant has a note.
 - A public map link uses the mint as `address` and `solana` as `chain`.
 - A bust refills to $50 and does not change the grind index.
 - A flat wallet with $4 to $5 free and fewer than 30 closes refills on the next scan instead of skipping every entry.

@@ -162,21 +162,116 @@ def signature_matches_order(order, tx, owner):
 
 
 _LAB = {"at": 0.0, "ready": False, "why": "lab has not cleared live trading",
-        "pause": False, "pause_why": "", "edges": []}
+        "pause": False, "pause_why": "", "edges": [], "brief": None}
+
+
+def _num(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _brief_from_report(report):
+    """Compact Lab research for Eye. Safe to store and show; no secrets."""
+    if not isinstance(report, dict):
+        return None
+    verdict = report.get("verdict") or {}
+    research = report.get("research") or {}
+    regime = report.get("regime") or {}
+    stop = report.get("stop_rule") or {}
+    model = report.get("model") or {}
+    quotes = report.get("quotes") or {}
+    real = report.get("real_desk") or {}
+    edges = [e for e in (report.get("edges") or []) if isinstance(e, dict)]
+    books = [b for b in (report.get("books") or []) if isinstance(b, dict)]
+    top = []
+    for b in books[:6]:
+        paired = b.get("paired") or {}
+        top.append({
+            "id": b.get("id"), "n": b.get("n"), "mean": b.get("mean"),
+            "paired": paired.get("mean"), "verdict": b.get("verdict"),
+        })
+    timing_best = None
+    for row in report.get("timing") or []:
+        if not isinstance(row, dict):
+            continue
+        n, mean = row.get("n") or 0, _num(row.get("mean"))
+        if n < 30 or mean is None:
+            continue
+        if timing_best is None or mean > timing_best["mean"]:
+            timing_best = {"group": row.get("group"), "entry": row.get("entry"),
+                           "n": n, "mean": mean}
+    diagnosis = []
+    for item in report.get("diagnosis") or []:
+        if not isinstance(item, dict):
+            continue
+        diagnosis.append({
+            "problem": item.get("problem"),
+            "looks_like": item.get("looks_like"),
+            "evidence": [str(x)[:120] for x in (item.get("evidence") or [])][:3],
+        })
+    frozen = (research.get("frozen") or {}).get("picks") or research.get("leaders") or []
+    paying = [e["bucket"] for e in edges if _num(e.get("net")) is not None and _num(e.get("net")) > 0 and (e.get("n") or 0) >= 5]
+    losing = [e["bucket"] for e in edges if _num(e.get("net")) is not None and _num(e.get("net")) <= 0 and (e.get("n") or 0) >= 5]
+    bits = [
+        f"Lab {report.get('generated_at') or ''}: verdict {verdict.get('verdict') or 'n/a'}",
+        f"phase {research.get('phase') or 'n/a'}",
+    ]
+    if verdict.get("why"):
+        bits.append(str(verdict["why"])[:160])
+    if top:
+        bits.append("top books " + ", ".join(
+            f"{b['id']} n={b['n']} mean={b['mean']}" for b in top[:3] if b.get("id")))
+    if paying or losing:
+        bits.append("score edges pay " + (", ".join(paying) or "none")
+                    + "; lose " + (", ".join(losing) or "none"))
+    if timing_best:
+        bits.append(
+            f"best entry timing {timing_best['group']}/{timing_best['entry']} "
+            f"n={timing_best['n']} mean={timing_best['mean']:+.2f}"
+        )
+    if frozen:
+        bits.append("lab picks " + ", ".join(str(x) for x in frozen[:5]))
+    bits.append(str(stop.get("verdict") or model.get("status") or "")[:120])
+    return {
+        "generated_at": report.get("generated_at"),
+        "verdict": verdict.get("verdict"),
+        "verdict_why": str(verdict.get("why") or "")[:240],
+        "phase": research.get("phase"),
+        "frozen_picks": list(frozen)[:5],
+        "diagnosis": diagnosis,
+        "edges": edges,
+        "top_books": top,
+        "timing_best": timing_best,
+        "regime_pause": bool(regime.get("pause")),
+        "regime_why": str(regime.get("why") or "")[:160],
+        "stop_rule": str(stop.get("verdict") or "")[:160],
+        "model": str(model.get("status") or "")[:160],
+        "quotes_calibrated": bool(quotes.get("calibrated")),
+        "real_desk_n": real.get("n"),
+        "real_desk_mean": real.get("mean"),
+        "paying_buckets": paying,
+        "losing_buckets": losing,
+        "text": ". ".join(b for b in bits if b).strip()[:500],
+    }
 
 
 def _apply_lab_report(report):
     gate = (report or {}).get("readiness") or {}
     ready = bool(gate.get("ready"))
     regime = (report or {}).get("regime") or {}
-    edges = (report or {}).get("edges") or []
+    edges = [e for e in ((report or {}).get("edges") or []) if isinstance(e, dict)]
     _LAB.update(
         at=time.time(),
         ready=ready,
         why="lab cleared this strategy" if ready else "lab has not cleared live trading",
         pause=bool(regime.get("pause")),
         pause_why=str(regime.get("why") or "")[:160],
-        edges=[e for e in edges if isinstance(e, dict)],
+        edges=edges,
+        brief=_brief_from_report(report),
     )
 
 
@@ -203,6 +298,11 @@ def lab_entry_block(score):
         if edge.get("bucket") == bucket and edge.get("pays") is False:
             return f"lab: score {bucket.replace('–', '-')} loses after costs"
     return ""
+
+
+def lab_brief():
+    """Latest Lab research brief for Eye, or None when the lab has not been read."""
+    return _LAB.get("brief")
 
 
 def lab_status(force=False):
