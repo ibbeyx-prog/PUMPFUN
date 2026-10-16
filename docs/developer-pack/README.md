@@ -1,6 +1,6 @@
 # Paper Scanner developer pack
 
-Handoff for the PUMPFUN paper-trading desk. These documents describe the system as it runs today: one operator, one paper book, Eye as the boss of four assistants, a separate Paper Scanner Lab that never trades, and Phantom as an optional browser signer. The server never receives a wallet private key.
+Handoff for the PUMPFUN paper-trading desk. These documents describe the system as it runs today: one operator, one paper book, Eye as the boss of five assistants (including Scout for strategy research), a separate Paper Scanner Lab that never trades, and Phantom as an optional browser signer. The server never receives a wallet private key.
 
 | Document | Use |
 | --- | --- |

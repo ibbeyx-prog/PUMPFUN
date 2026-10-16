@@ -10,6 +10,11 @@ const ROSTER = [
     task: "Reads the scan and puts the strongest names in front of Eye.",
   },
   {
+    name: "Scout",
+    focus: "Strategy",
+    task: "Researches the Lab and the closed book, then tells Eye which strategy looks closest to profitable.",
+  },
+  {
     name: "Scribe",
     focus: "Book",
     task: "Reviews closed trades and tells Eye whether the book is paying.",
@@ -56,10 +61,11 @@ function CrewCard({ agent }) {
 }
 
 const STATIONS = {
-  Vet: { x: 18, y: 62, color: "#34d399" },
-  "Scan watch": { x: 38, y: 78, color: "#38bdf8" },
-  Scribe: { x: 62, y: 78, color: "#fbbf24" },
-  Risk: { x: 82, y: 62, color: "#fb7185" },
+  Vet: { x: 12, y: 60, color: "#34d399" },
+  "Scan watch": { x: 30, y: 78, color: "#38bdf8" },
+  Scout: { x: 50, y: 84, color: "#c084fc" },
+  Scribe: { x: 70, y: 78, color: "#fbbf24" },
+  Risk: { x: 88, y: 60, color: "#fb7185" },
 };
 
 export function EyeFloor({ eye, phase, pick }) {
@@ -172,9 +178,9 @@ export default function EyeDesk({ eye, phase }) {
     <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#141820]/90">
       <div className="border-b border-white/[0.06] px-4 py-4 sm:px-5">
         <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">Goal</div>
-        <h2 className="mt-1 text-lg font-semibold text-slate-100">A paper book that pays</h2>
+        <h2 className="mt-1 text-lg font-semibold text-slate-100">Find a profitable paper strategy</h2>
         <p className="mt-1 max-w-3xl text-sm text-slate-400">
-          The assistants gather the scan, the rugs, and the book. Eye is the only one who decides. Nobody spends.
+          Scout researches the Lab and the book. The others brief the scan, rugs, closes, and wallet risk. Eye is the only one who decides. Nobody spends.
         </p>
       </div>
 
@@ -191,7 +197,7 @@ export default function EyeDesk({ eye, phase }) {
           <div className="h-px w-[78%] bg-amber-300/30" />
         </div>
 
-        <div className="mt-0 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-0 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {staff.map((agent) => <CrewCard key={agent.name} agent={agent} />)}
         </div>
 

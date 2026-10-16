@@ -21,7 +21,7 @@ PATH = os.path.join(ct.DATA, "eye_knowledge.json")
 LOCKED = {"budget_usd", "trade_usd", "reserve_usd", "one_trade_per_coin", "size_sol"}
 # Operator grant. Paper assistants only. None of them can spend, resize, or resume live trading.
 MAY_HIRE = True
-ALLOWED_POWERS = {"read_scan", "read_trades", "write_note", "halt_live"}
+ALLOWED_POWERS = {"read_scan", "read_trades", "read_lab", "write_note", "halt_live"}
 DENIED_NAMES = ("trade", "trader", "phantom", "spend", "spender", "size", "sizer", "wallet", "budget", "live")
 ROSTER = (
     {
@@ -33,6 +33,11 @@ ROSTER = (
         "name": "Scan watch",
         "job": "Reads the scan for Eye and puts the strongest names in front of it.",
         "powers": ["read_scan", "write_note"],
+    },
+    {
+        "name": "Scout",
+        "job": "Researches the Lab books and the closed paper book, then tells Eye which strategy looks closest to profitable.",
+        "powers": ["read_lab", "read_trades", "write_note"],
     },
     {
         "name": "Scribe",
@@ -206,6 +211,31 @@ def _research_prompt():
     )
 
 
+def _strategy_research_prompt():
+    """Scout's AI brief: find a profitable paper strategy from Lab + desk evidence."""
+    brief = live.lab_brief() or {}
+    book = _book_stats(_closed_rows())
+    wr = "n/a" if book["wr"] is None else f"{book['wr']:.0%}"
+    pnl = ", ".join(f"{k}-src {v:+.3f} SOL" for k, v in sorted((book.get("pnl") or {}).items()))
+    lab_text = brief.get("text") or "Lab brief not loaded yet."
+    picks = ", ".join(str(x) for x in (brief.get("frozen_picks") or [])[:5]) or "none"
+    return (
+        "You are Scout, Eye's strategy researcher on a Solana meme-coin PAPER desk. "
+        "Eye's job is to find a profitable paper strategy. You only propose; Eye decides. "
+        "Never suggest live trading, private keys, changing budget, trade size, or reserve. "
+        "Prefer Lab and desk numbers over opinions. If the sample is thin, say so. "
+        f"Desk book: {book['n']} closes, win rate {wr}, fades {book['fades']:.0%}, pnl by sources [{pnl or 'n/a'}]. "
+        f"Lab: verdict {brief.get('verdict') or 'n/a'}, phase {brief.get('phase') or 'n/a'}, "
+        f"paying buckets {', '.join(brief.get('paying_buckets') or []) or 'n/a'}, "
+        f"losing buckets {', '.join(brief.get('losing_buckets') or []) or 'n/a'}, "
+        f"picks {picks}. {lab_text} "
+        "Reply with JSON only, no markdown: "
+        '{"notes":[{"text":"...","source":"lab|desk|web"}]} '
+        "with 4 to 6 concrete strategy tips (entry score, sources, early cut, pause, timing, ticket). "
+        "Each text under 240 characters."
+    )
+
+
 def _review_prompt(knowledge):
     lines = [f"- ({n.get('src')}) {n.get('text')}" for n in knowledge[:15]]
     joined = "\n".join(lines) or "- none yet"
@@ -226,6 +256,7 @@ def _review_prompt(knowledge):
 
 
 async def research(session=None, complete=None):
+    """AI research pass. Prefers Scout's strategy prompt once the Lab or desk has evidence."""
     data = _load()
     now = time.time()
     if data.get("last_research") and now < float(data.get("next_research") or 0):
@@ -234,22 +265,31 @@ async def research(session=None, complete=None):
         data["next_research"] = now + 3600
         _save(data)
         return data
+    if session is not None:
+        try:
+            await live.refresh_lab(session)
+        except Exception:
+            pass
+    use_strategy = bool(live.lab_brief()) or len(_closed_rows()) >= 30
+    prompt = _strategy_research_prompt() if use_strategy else _research_prompt()
     try:
         if complete:
-            raw = await complete(_research_prompt())
+            raw = await complete(prompt)
         else:
-            raw = await _anthropic(session, _research_prompt(), True)
+            raw = await _anthropic(session, prompt, True)
         parsed = _parse_json(raw)
         found = parsed.get("notes") or []
         if not (4 <= len(found) <= 6):
             raise ValueError("expected 4 to 6 notes")
         for item in found:
-            add_note("web", item.get("text"), item.get("source") or "")
+            src = item.get("source") or ("scout" if use_strategy else "")
+            add_note("web", item.get("text"), src)
         data = _load()
         data["last_research"] = now
         data["next_research"] = now + HOURS * 3600
         _save(data)
-        print(f"LEARNED {len(found)} market notes")
+        kind = "strategy" if use_strategy else "market"
+        print(f"LEARNED {len(found)} {kind} notes")
     except Exception as e:
         data = _load()
         data["next_research"] = time.time() + 3600
@@ -1134,10 +1174,62 @@ def _scan_state():
         return [], {}
 
 
+def _scout_text():
+    """Scout: Lab + closed book → one strategy brief for Eye."""
+    brief = live.lab_brief()
+    book = _book_stats(_closed_rows())
+    n, wr = book["n"], book["wr"]
+    if not brief and n < 5:
+        return (
+            "Eye, I am Scout. I research strategies for you. "
+            "The Lab brief is not loaded yet and the book is still short, so I have no edge to propose."
+        )
+    bits = ["Eye, I researched the Lab and the book for a strategy that can pay."]
+    if n:
+        bits.append(f"Desk: {n} closes won {wr:.0%}." if wr is not None else f"Desk: {n} closes.")
+        by_pnl = book.get("pnl") or {}
+        if by_pnl:
+            best = max(by_pnl.items(), key=lambda kv: kv[1])
+            worst = min(by_pnl.items(), key=lambda kv: kv[1])
+            bits.append(f"{best[0]}-source pnl {best[1]:+.3f} SOL, {worst[0]}-source {worst[1]:+.3f} SOL.")
+    if brief:
+        bits.append(f"Lab verdict {brief.get('verdict') or 'n/a'} ({brief.get('phase') or 'n/a'}).")
+        paying = brief.get("paying_buckets") or []
+        losing = brief.get("losing_buckets") or []
+        if paying or losing:
+            bits.append(
+                "Score edges pay " + (", ".join(paying) or "none")
+                + "; lose " + (", ".join(losing) or "none") + "."
+            )
+        tops = brief.get("top_books") or []
+        if tops and tops[0].get("id"):
+            lead = tops[0]
+            bits.append(f"Top Lab book {lead.get('id')} n={lead.get('n')} mean={lead.get('mean')}.")
+        timing = brief.get("timing_best")
+        if timing:
+            bits.append(
+                f"Best timing so far {timing.get('entry')} on {timing.get('group')} "
+                f"(n={timing.get('n')}, mean {timing.get('mean'):+.2f})."
+            )
+        picks = brief.get("frozen_picks") or []
+        if picks:
+            bits.append("Lab picks: " + ", ".join(str(x) for x in picks[:3]) + ".")
+        if brief.get("verdict") in ("No edge", "Costs only") or (wr is not None and wr < 0.18 and n >= 100):
+            bits.append("I would pause new entries and wait for a Lab winner or a warmer book.")
+        elif "80+" in paying:
+            bits.append("I would keep score 80+, cut fades fast, and ignore weaker scores.")
+        elif tops and str(tops[0].get("id") or "").endswith("-cut"):
+            bits.append("I would copy the fast-cut exit while the Lab sample is still early.")
+    bits.append("You decide. I do not spend or arm the wallet.")
+    return " ".join(bits)
+
+
 def _assist_text(agent):
     """A briefing for Eye, written the way a staff assistant would."""
     powers = set(agent.get("powers") or [])
     names, sources = _scan_state()
+    if agent.get("name") == "Scout" or "read_lab" in powers:
+        return _scout_text()
     if agent.get("name") == "Vet":
         rug = sources.get("rugcheck") or {}
         bubble = sources.get("bubblemap") or {}
