@@ -171,9 +171,10 @@ def lessons(rows):
     text = "Not enough closed trades to suggest yet."
     if n >= 5:
         bits = [f"{wins}/{n} closes won"]
-        three = pack(buckets.get(3, []))
-        if three:
-            bits.append(f"3-source pnl {three['pnl']:+.3f} SOL")
+        for label, key in (("2-source", 2), ("3-source", 3)):
+            bucket = pack(buckets.get(key, []))
+            if bucket and bucket["n"] >= 3:
+                bits.append(f"{label} pnl {bucket['pnl']:+.3f} SOL ({bucket['win_rate']:.0%} of {bucket['n']})")
         if stops / n >= 0.5:
             bits.append(f"{stops} stopped out")
         one = pack(buckets.get(1, []))

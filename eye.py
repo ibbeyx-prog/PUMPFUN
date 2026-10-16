@@ -418,10 +418,17 @@ def improvements(rows=None):
             "text": f"{len(fades)} of {n} closes lost before 1x. Sell under 0.8x after 10 minutes instead of holding to the full stop.",
         })
     if len(wins) / n < 0.25:
+        bar = 85 if len(wins) / n < 0.18 else 70
         recs.append({
             "id": "score",
             "label": "Raise the bar",
-            "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of 70.",
+            "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of {bar}.",
+        })
+    if len(fades) / n >= 0.55 and tune.value("early_cut_x", None) is not None:
+        recs.append({
+            "id": "cut_harder",
+            "label": "Cut faster",
+            "text": f"{len(fades)} of {n} closes still fade under 1x. Cut at 0.75x after 8 minutes.",
         })
     ladder = [r for r in wins if "ladder" in (r.get("note") or "")]
     if wins and len(ladder) / len(wins) >= 0.4:
@@ -430,13 +437,20 @@ def improvements(rows=None):
             "label": "Let winners run",
             "text": f"{len(ladder)} of {len(wins)} winners paid on the ladder. Hold a trade above entry and sell into 2x, 3.5x, and 5x.",
         })
+    paused = tune.value("max_new_entries_per_scan", 1) == 0
+    if n >= tune.REVIEW_CLOSES and len(wins) / n < 0.18 and not paused:
+        recs.append({
+            "id": "pause",
+            "label": "Trade less",
+            "text": f"Only {len(wins) / n:.0%} of {n} closes won after a tight book. Pause new paper entries until the last 15 win 25%.",
+        })
     if not recs:
         recs.append({
             "id": "steady",
             "label": "Keep the book",
             "text": f"{len(wins)} of {n} closes won. No rule change stands out from this book.",
         })
-    return recs[:4]
+    return recs[:5]
 
 
 def _pick(recs, *ids):
@@ -679,17 +693,24 @@ def strategy_line():
     if tune.locked():
         return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
     data = tune._load()
-    if data.get("entry_rule") == tune.ENTRY_RULE_ID:
-        v = data.get("values") or {}
-        return (
-            f"Two-source paper entry: {int(v.get('min_sources', 2))} sources, score {int(v.get('entry_score', 65))} "
-            f"or more, 5-minute move up to {int(v.get('max_change_5m', 60))}%. "
-            "A bust does not change it. The Lab's shadow books have to name a winner first."
-        )
-    number = int(data.get("grind") or 0) % len(PRESETS) + 1
+    v = data.get("values") or {}
+    sources = int(v.get("min_sources", 2 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 1))
+    score = int(v.get("entry_score", 65 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 60))
+    chase = int(v.get("max_change_5m", 60 if data.get("entry_rule") == tune.ENTRY_RULE_ID else 90))
+    paused = v.get("max_new_entries_per_scan") == 0
+    cut = v.get("early_cut_x")
+    bits = [
+        f"{sources} sources",
+        f"score {score} or more",
+        f"5-minute move up to {chase}%",
+    ]
+    if cut is not None:
+        bits.append(f"early cut {float(cut):g}x after {int(v.get('early_cut_min') or 10)}m")
+    if paused:
+        bits.append("new entries paused")
     return (
-        f"Keeping strategy {number} of {len(PRESETS)}. "
-        "A bust does not rotate presets. The Lab's shadow books have to name a winner first."
+        f"Paper entry: {', '.join(bits)}. "
+        "A bust does not rotate the book. The Lab's shadow books have to name a winner first."
     )
 
 
@@ -734,51 +755,131 @@ def tend_wallet(eng):
     return did
 
 
+def _book_stats(closed):
+    """Full-run lookback used when Eye decides the next paper rule."""
+    n = len(closed)
+    if not n:
+        return {"n": 0, "wr": None, "fades": 0, "by": {}, "pnl": {}}
+    fades = sum(1 for r in closed if _num(r, "sol_pnl") < 0 and _num(r, "x") < 1)
+    by, pnl = {}, {}
+    for r in closed:
+        k = _sources(r)
+        by.setdefault(k, []).append(_num(r, "sol_pnl"))
+    for k, xs in by.items():
+        pnl[k] = sum(xs)
+    wins = sum(1 for r in closed if _num(r, "sol_pnl") > 0)
+    return {"n": n, "wr": wins / n, "fades": fades / n, "by": by, "pnl": pnl}
+
+
 def _grow_once(ids, recent, market):
-    """Move at most one paper rule. Never touches budget, size, or live trading."""
+    """Move at most one paper rule from the full closed book. Never touches budget, size, or live trading."""
     held = _maybe_lock()
     if held:
         return held
-    n = len(recent)
-    if len(_closed_rows()) < tune.REVIEW_CLOSES:
-        chase = market["chasing"] / market["names"] if market["names"] else 0
+    closed = _closed_rows()
+    book = _book_stats(closed)
+    n_recent = len(recent)
+    recent_wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n_recent) if n_recent else None
+    chase = market["chasing"] / market["names"] if market["names"] else 0
+    paused = tune.value("max_new_entries_per_scan", 1) == 0
+
+    if book["n"] < tune.REVIEW_CLOSES:
         if chase >= 0.4 and _current("max_change_5m", 90) > 40:
             nxt = _current("max_change_5m", 90) - 5
             if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
                 return f"Tightened the 5-minute chase cap to {int(nxt)}%."
-        wr = (sum(1 for r in recent if _num(r, "sol_pnl") > 0) / n) if n else 0
-        if n:
-            return f"Kept the rules. The last {n} closes won {wr:.0%}. A rule change waits for {tune.REVIEW_CLOSES} closes."
+        if n_recent:
+            return (
+                f"Kept the rules. The last {n_recent} closes won {recent_wr:.0%}. "
+                f"A rule change waits for {tune.REVIEW_CLOSES} closes."
+            )
         return "Kept the rules. Not enough closes to move one."
-    wins = sum(1 for r in recent if _num(r, "sol_pnl") > 0)
-    wr = (wins / n) if n else 0
-    chase = market["chasing"] / market["names"] if market["names"] else 0
-    if ("sources" in ids or "one_source" in ids) and _current("min_sources", 1) < 3:
-        if _apply("min_sources", 3, "Eye: one- and two-source closes are not paying."):
+
+    # Resume a paused book before any other change.
+    if paused and recent_wr is not None and recent_wr >= 0.25 and n_recent >= 10:
+        if _apply("max_new_entries_per_scan", 1,
+                  f"Eye lookback: last {n_recent} closes won {recent_wr:.0%}. Open one paper entry per scan again."):
+            return f"Resumed paper entries. The last {n_recent} closes won {recent_wr:.0%}."
+        return f"New paper entries stay paused. The last {n_recent} closes won {recent_wr:.0%}."
+
+    two = book["by"].get(2) or []
+    two_wr = (sum(1 for x in two if x > 0) / len(two)) if two else None
+    two_pnl = book["pnl"].get(2, 0.0)
+    if (("sources" in ids or "one_source" in ids)
+            and _current("min_sources", 1) < 3
+            and two_wr is not None and two_wr < 0.35 and two_pnl <= 0):
+        if _apply("min_sources", 3,
+                  f"Eye lookback: 2-source closes won {two_wr:.0%} of {len(two)} and lost {two_pnl:+.3f} SOL."):
             return "Raised min sources to 3."
-    if "score" in ids and _current("entry_score", 60) < 70:
-        if _apply("entry_score", 70, "Eye: too few closes are winning. Pass weaker scores."):
-            return "Raised the entry score to 70."
-    if "cut" in ids and tune.value("early_cut_x", None) is None:
-        moved = _apply("early_cut_x", 0.8, "Eye: most closes lose before 1x. Cut the fade.")
-        _apply("early_cut_min", 10, "Eye: wait 10 minutes before that early cut.")
-        if moved:
-            return "Turned on the 0.8x early cut."
+
+    if book["fades"] >= 0.55 and ("cut" in ids or "cut_harder" in ids):
+        cut = tune.value("early_cut_x", None)
+        if cut is None:
+            moved = _apply("early_cut_x", 0.8, "Eye lookback: most closes lose before 1x. Cut the fade.")
+            _apply("early_cut_min", 10, "Eye: wait 10 minutes before that early cut.")
+            if moved:
+                return "Turned on the 0.8x early cut."
+        elif float(cut) > 0.75:
+            moved = _apply("early_cut_x", 0.75,
+                           f"Eye lookback: {book['fades']:.0%} of {book['n']} closes fade under 1x. Cut harder.")
+            _apply("early_cut_min", 8, "Eye: wait 8 minutes before that harder early cut.")
+            if moved:
+                return "Tightened the early cut to 0.75x after 8 minutes."
+
     if chase >= 0.4 and _current("max_change_5m", 90) > 40:
         nxt = _current("max_change_5m", 90) - 5
         if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
             return f"Tightened the 5-minute chase cap to {int(nxt)}%."
+
+    tight = (
+        _current("min_sources", 1) >= 3
+        and _current("entry_score", 60) >= 80
+        and tune.value("early_cut_x", None) is not None
+    )
+    # A tight cold book pauses before climbing the score any further.
+    if (not paused and tight and book["wr"] is not None and book["wr"] < 0.18
+            and (recent_wr is None or recent_wr < 0.15)
+            and ("pause" in ids or book["wr"] < 0.16 or _current("entry_score", 60) >= 85)):
+        if _apply("max_new_entries_per_scan", 0,
+                  f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won after a tight book. Pause new entries."):
+            return (
+                f"Paused new paper entries. {book['n']} closes won {book['wr']:.0%} "
+                f"(last {n_recent} won {recent_wr:.0%}). Resume when the last 15 win 25%."
+            )
+
+    if book["wr"] is not None and book["wr"] < 0.20 and ("score" in ids or book["wr"] < 0.18):
+        score = _current("entry_score", 60)
+        if book["wr"] < 0.18 and score < 85:
+            target = 85
+        elif score < 70:
+            target = 70
+        elif score < 85 and recent_wr is not None and recent_wr < 0.15:
+            target = min(85, score + 5)
+        else:
+            target = None
+        if target is not None and score < target:
+            if _apply("entry_score", target,
+                      f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won. Ask for score {target}."):
+                return f"Raised the entry score to {int(target)}."
+
     floor = 70 if "score" in ids else 55
-    if n >= 8 and wr < 0.2 and _current("entry_score", 60) < 80:
-        nxt = _current("entry_score", 60) + 5
-        if _apply("entry_score", nxt, f"Eye: the last {n} closes won {wr:.0%}. Ask for a higher score."):
-            return f"Raised the entry score to {int(nxt)}."
-    if n >= 8 and wr >= 0.45 and chase < 0.25 and not tool_rules()["hostile"] and _current("entry_score", 60) > floor:
+    if (n_recent >= 8 and recent_wr is not None and recent_wr >= 0.45 and chase < 0.25
+            and not tool_rules()["hostile"] and _current("entry_score", 60) > floor):
         nxt = _current("entry_score", 60) - 5
-        if _apply("entry_score", max(floor, nxt), f"Eye: the last {n} closes won {wr:.0%}. Allow a slightly lower score."):
+        if _apply("entry_score", max(floor, nxt),
+                  f"Eye: the last {n_recent} closes won {recent_wr:.0%}. Allow a slightly lower score."):
             return f"Lowered the entry score toward {int(max(floor, nxt))}."
-    if n:
-        return f"Kept the rules. The last {n} closes won {wr:.0%}."
+
+    if paused:
+        return (
+            f"New paper entries stay paused. Full book {book['wr']:.0%} of {book['n']}; "
+            f"last {n_recent} won {recent_wr:.0%}. Need 25% on the last 15 to resume."
+        )
+    if n_recent:
+        return (
+            f"Kept the rules after lookback. Full book {book['wr']:.0%} of {book['n']} won; "
+            f"last {n_recent} won {recent_wr:.0%}."
+        )
     return "Kept the rules. Not enough recent closes to move one."
 
 

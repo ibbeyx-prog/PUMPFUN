@@ -19,7 +19,7 @@ REVIEW_CLOSES = 100
 
 BOUNDS = {
     "min_sources": (1, 3),
-    "entry_score": (55, 80),
+    "entry_score": (55, 90),
     "max_change_5m": (40, 90),
     "max_new_entries_per_scan": (0, 1),
     "early_cut_x": (0.70, 0.90),
@@ -192,28 +192,49 @@ def review():
     n = len(rows)
     wr = _wr([p for xs in buckets.values() for p in xs])
     fades = sum(1 for r in rows if float(r["sol_pnl"]) < 0 and float(r.get("x") or 1) < 1)
+    recent = rows[-15:]
+    recent_wr = _wr([float(r["sol_pnl"]) for r in recent])
     changed = False
+    paused = data["values"].get("max_new_entries_per_scan") == 0
+
+    # Resume before tightening: a cold book that starts winning again should trade again.
+    if paused and recent_wr is not None and recent_wr >= 0.25 and len(recent) >= 10:
+        changed |= _set(data, "max_new_entries_per_scan", 1,
+                        f"Last {len(recent)} closes won {recent_wr:.0%}. Open one paper entry per scan again.")
+        paused = False
 
     two = buckets.get(2) or []
-    if len(two) >= 3 and _wr(two) < 0.35 and data["values"].get("min_sources", 1) < 3:
+    two_pnl = sum(two) if two else 0.0
+    # Only demand a third source when two-source closes both lose often and lose money.
+    if (len(two) >= 3 and _wr(two) is not None and _wr(two) < 0.35 and two_pnl <= 0
+            and data["values"].get("min_sources", 1) < 3):
         changed |= _set(data, "min_sources", 3,
-                        f"2-source closes won {_wr(two):.0%} of {len(two)}. Require 3 sources.")
+                        f"2-source closes won {_wr(two):.0%} of {len(two)} and lost {two_pnl:+.3f} SOL. Require 3 sources.")
     elif (buckets.get(1) and len(buckets[1]) >= 3 and _wr(buckets[1]) < 0.4
           and data["values"].get("min_sources", 1) < 2):
         changed |= _set(data, "min_sources", 2,
                         f"1-source closes won {_wr(buckets[1]):.0%} of {len(buckets[1])}.")
 
-    if fades / n >= 0.45 and "early_cut_x" not in data["values"]:
-        changed |= _set(data, "early_cut_x", 0.80,
-                        f"{fades} of {n} closes lost before 1x. Cut weak trades before the full stop.")
-        changed |= _set(data, "early_cut_min", 10, "Wait 10 minutes before that early cut.")
+    if fades / n >= 0.45:
+        cut = data["values"].get("early_cut_x")
+        if cut is None:
+            changed |= _set(data, "early_cut_x", 0.80,
+                            f"{fades} of {n} closes lost before 1x. Cut weak trades before the full stop.")
+            changed |= _set(data, "early_cut_min", 10, "Wait 10 minutes before that early cut.")
+        elif float(cut) > 0.75 and fades / n >= 0.55:
+            changed |= _set(data, "early_cut_x", 0.75,
+                            f"{fades} of {n} closes still fade under 1x. Cut at 0.75x after 8 minutes.")
+            changed |= _set(data, "early_cut_min", 8, "Wait 8 minutes before that harder early cut.")
     elif wr is not None and wr >= 0.5 and fades / n < 0.3:
         changed |= _clear(data, "early_cut_x", "Stops are no longer the usual exit.")
         changed |= _clear(data, "early_cut_min", "Early cut turned off with the rule above.")
 
-    if wr is not None and wr < 0.25 and data["values"].get("entry_score", 60) < 70:
-        changed |= _set(data, "entry_score", 70,
-                        f"Only {wr:.0%} of {n} closes won. Demand a higher entry score.")
+    if wr is not None and wr < 0.25:
+        score = data["values"].get("entry_score", 60)
+        target = 70 if score is None or score < 70 else (85 if score < 85 and wr < 0.18 else None)
+        if target is not None and (score is None or score < target):
+            changed |= _set(data, "entry_score", target,
+                            f"Only {wr:.0%} of {n} closes won. Demand a score of {target} or more.")
 
     three = buckets.get(3) or []
     import eye
@@ -222,6 +243,17 @@ def review():
             and data["values"].get("min_sources", 1) > 2):
         changed |= _set(data, "min_sources", 2,
                         "Recent closes are paying again. Allow a 2-source entry.")
+
+    # When the book is already tight and still cold, stop opening new paper trades.
+    tight = (
+        data["values"].get("min_sources", 1) >= 3
+        and data["values"].get("entry_score", 60) >= 80
+        and data["values"].get("early_cut_x") is not None
+    )
+    if (not paused and tight and wr is not None and wr < 0.18
+            and (recent_wr is None or recent_wr < 0.15)):
+        changed |= _set(data, "max_new_entries_per_scan", 0,
+                        f"{wr:.0%} of {n} closes won after a tight book. Pause new paper entries until the last 15 win 25%.")
 
     data["reviewed_closes"] = n
     data["changes"] = data["changes"][:100]
