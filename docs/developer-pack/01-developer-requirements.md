@@ -379,7 +379,7 @@ Score additions, before hard filters:
 | Clean RugCheck score under 15 | 8 |
 | Bubblemaps score 60 or higher | 8 |
 
-Hard skips include market cap outside $6,000–$800,000, liquidity under $8,000, no liquidity unless GMGN or DexScreener is present, rug ratio over 0.40, bundler rate over 0.35, wash trading, age under 2 minutes or over 36 hours, too few sources, and the skill and RugCheck or Bubblemaps blocks below.
+Hard skips include market cap outside $500,000–$2,000,000, liquidity under $8,000, no liquidity unless GMGN or DexScreener is present, rug ratio over 0.40, bundler rate over 0.35, wash trading, age under 2 minutes or over 36 hours, too few sources, and the skill and RugCheck or Bubblemaps blocks below.
 
 An `enter` also needs a confirming feed, a 5-minute change inside the band, and a score at or above `entry_score`.
 
