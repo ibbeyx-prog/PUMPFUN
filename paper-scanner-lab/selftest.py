@@ -15,7 +15,7 @@ def snap(**extra):
         "decision": "enter",
         "note": "3 sources, 5m 12%",
         "sources": ["gmgn", "dexscreener", "pump.fun"],
-        "mcap": 50000,
+        "mcap": 600000,
         "liq": 20000,
         "change_5m": 12,
         "age_min": 30,
@@ -50,6 +50,7 @@ def test_books_and_fills():
     assert engine.round_trip_cost_usd(5.5, 10000) == 0.85
     filters = engine.book_by_id("filters-ladder")
     assert engine.would_enter(filters, snap(score=10, sources=["pump.fun"], change_5m=0))
+    assert not engine.would_enter(filters, snap(mcap=50000))
     assert not engine.would_enter(filters, snap(note="rugcheck: rugged"))
     assert engine.would_enter(filters, snap(note="rugcheck 12"))
     harsh = engine.round_trip(1, 1, 5, 100)

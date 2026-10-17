@@ -454,7 +454,7 @@ def decide(c):
 
     hard = []
     mcap, liq = c["mcap"], c["liq"]
-    if mcap is not None and not (cfg("min_mcap_usd", 6000) <= mcap <= cfg("max_mcap_usd", 800000)):
+    if mcap is not None and not (cfg("min_mcap_usd", 500000) <= mcap <= cfg("max_mcap_usd", 2000000)):
         hard.append("mcap outside range")
     if liq is not None and liq < cfg("min_liquidity_usd", 8000):
         hard.append("thin liquidity")
@@ -635,7 +635,7 @@ async def scan_once(session):
 
     ranked = []
     for c in book.values():
-        if len(c["sources"]) == 1 and "pump.fun" in c["sources"] and not c["live"] and (c["mcap"] or 0) < cfg("min_mcap_usd", 6000):
+        if len(c["sources"]) == 1 and "pump.fun" in c["sources"] and not c["live"] and (c["mcap"] or 0) < cfg("min_mcap_usd", 500000):
             row = public(c, 0, "skip", "pump only, below min mcap")
             row["_price"] = c["price_sol"]
             ranked.append(row)
