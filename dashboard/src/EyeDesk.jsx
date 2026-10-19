@@ -170,18 +170,40 @@ export function EyeCrew({ eye }) {
   );
 }
 
-export default function EyeDesk({ eye, phase }) {
+export default function EyeDesk({ eye, phase, onOptimize, optimizing }) {
   const staff = staffOf(eye);
   const briefing = staff.filter((agent) => agent.working).length;
   const decision = eye?.growth?.[0]?.did || eye?.strategy || "Eye is waiting for the next pass.";
+  const last = eye?.last_optimize;
   return (
     <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#141820]/90">
       <div className="border-b border-white/[0.06] px-4 py-4 sm:px-5">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">Goal</div>
-        <h2 className="mt-1 text-lg font-semibold text-slate-100">Find a profitable paper strategy</h2>
-        <p className="mt-1 max-w-3xl text-sm text-slate-400">
-          Scout researches the Lab and the book. The others brief the scan, rugs, closes, and wallet risk. Eye is the only one who decides. Nobody spends.
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">Goal</div>
+            <h2 className="mt-1 text-lg font-semibold text-slate-100">Find a profitable paper strategy</h2>
+            <p className="mt-1 max-w-3xl text-sm text-slate-400">
+              Scout researches the Lab and the book via cloud Anthropic. The others brief the scan, rugs, closes, and wallet risk. Eye is the only one who decides. Nobody spends.
+            </p>
+          </div>
+          {onOptimize && (
+            <button
+              type="button"
+              disabled={optimizing || eye?.anthropic === false}
+              onClick={onOptimize}
+              className="rounded-xl border border-violet-300/40 bg-violet-500/15 px-3 py-2 text-xs font-medium text-violet-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {optimizing ? "Researching…" : "Research & optimize"}
+            </button>
+          )}
+        </div>
+        {last?.at && (
+          <p className="mt-2 text-xs text-slate-500">
+            Last optimize {last.at}
+            {last.move_count != null ? ` · ${last.move_count} rule move${last.move_count === 1 ? "" : "s"}` : ""}
+            {last.model ? ` · ${last.model}` : ""}
+          </p>
+        )}
       </div>
 
       <div className="px-4 py-5 sm:px-5">

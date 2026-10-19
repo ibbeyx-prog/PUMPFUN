@@ -370,6 +370,19 @@ async def api_eye(request):
     return web.json_response(eye.public())
 
 
+async def api_eye_optimize(request):
+    """Force cloud Anthropic Scout research + multi-step paper rule optimize."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            result = await eye.full_optimize(session=session)
+        except Exception as e:
+            return web.json_response(
+                {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"},
+                status=500,
+            )
+    return web.json_response({"ok": True, **result})
+
+
 def _buy_symbol(note):
     """BUY notes read 'SYMBOL size X SOL · $Y phantom paper'. No symbol leaves the note starting with 'size'."""
     head = (note or "").split(" size ", 1)[0].strip()
@@ -704,6 +717,7 @@ def make_app():
         web.get("/api/candidates", api_candidates),
         web.get("/api/quotes", api_quotes),
         web.get("/api/eye", api_eye),
+        web.post("/api/eye/optimize", api_eye_optimize),
         web.get("/api/chat", api_chat_get),
         web.post("/api/chat", api_chat_post),
         web.get("/api/phantom", api_phantom_get),
