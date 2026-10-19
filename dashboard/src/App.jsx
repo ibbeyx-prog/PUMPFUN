@@ -442,6 +442,7 @@ export default function App() {
   const [eye, setEye] = useState({ knowledge: [] });
   const [err, setErr] = useState("");
   const [tab, setTab] = useState("scan");
+  const [optimizing, setOptimizing] = useState(false);
 
   const get = useCallback(
     async (path) => {
@@ -451,6 +452,27 @@ export default function App() {
     },
     [token]
   );
+
+  const runOptimize = useCallback(async () => {
+    if (!token || optimizing) return;
+    setOptimizing(true);
+    setErr("");
+    try {
+      const r = await fetch("/api/eye/optimize", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) {
+        throw new Error(data.error || `optimize failed (${r.status})`);
+      }
+      setEye(data);
+    } catch (e) {
+      setErr(e.message || "Optimize failed");
+    } finally {
+      setOptimizing(false);
+    }
+  }, [token, optimizing]);
 
   useEffect(() => {
     if (!token) return;
@@ -766,7 +788,12 @@ export default function App() {
 
         {tab === "agent" && (
           <div className="space-y-4">
-            <EyeDesk eye={eye} phase={sum.status?.phase} />
+            <EyeDesk
+              eye={eye}
+              phase={sum.status?.phase}
+              onOptimize={runOptimize}
+              optimizing={optimizing}
+            />
             {sum.lesson && (
               <div className="rounded-2xl border border-white/[0.07] bg-[#141820]/90 px-4 py-3 text-sm text-slate-300">
                 <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Agent read</div>

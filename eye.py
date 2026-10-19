@@ -255,11 +255,14 @@ def _review_prompt(knowledge):
     )
 
 
-async def research(session=None, complete=None):
-    """AI research pass. Prefers Scout's strategy prompt once the Lab or desk has evidence."""
+async def research(session=None, complete=None, force=False, both=False):
+    """AI research pass via cloud Anthropic. Prefers Scout's strategy prompt once Lab/desk has evidence.
+
+    force skips the research cooldown. both runs strategy then market research in one pass.
+    """
     data = _load()
     now = time.time()
-    if data.get("last_research") and now < float(data.get("next_research") or 0):
+    if (not force) and data.get("last_research") and now < float(data.get("next_research") or 0):
         return data
     if complete is None and not os.getenv("ANTHROPIC_API_KEY"):
         data["next_research"] = now + 3600
@@ -270,32 +273,93 @@ async def research(session=None, complete=None):
             await live.refresh_lab(session)
         except Exception:
             pass
-    use_strategy = bool(live.lab_brief()) or len(_closed_rows()) >= 30
-    prompt = _strategy_research_prompt() if use_strategy else _research_prompt()
+    use_strategy = bool(live.lab_brief()) or len(_closed_rows()) >= 30 or force
+    prompts = []
+    if use_strategy:
+        prompts.append(("strategy", _strategy_research_prompt()))
+    if both or not use_strategy:
+        prompts.append(("market", _research_prompt()))
+    if not prompts:
+        prompts.append(("market", _research_prompt()))
+    learned = 0
     try:
-        if complete:
-            raw = await complete(prompt)
-        else:
-            raw = await _anthropic(session, prompt, True)
-        parsed = _parse_json(raw)
-        found = parsed.get("notes") or []
-        if not (4 <= len(found) <= 6):
-            raise ValueError("expected 4 to 6 notes")
-        for item in found:
-            src = item.get("source") or ("scout" if use_strategy else "")
-            add_note("web", item.get("text"), src)
+        for kind, prompt in prompts:
+            if complete:
+                raw = await complete(prompt)
+            else:
+                raw = await _anthropic(session, prompt, True)
+            parsed = _parse_json(raw)
+            found = parsed.get("notes") or []
+            if not (4 <= len(found) <= 6):
+                raise ValueError(f"expected 4 to 6 {kind} notes")
+            for item in found:
+                src = item.get("source") or ("scout" if kind == "strategy" else "")
+                add_note("web", item.get("text"), src)
+            learned += len(found)
+            print(f"LEARNED {len(found)} {kind} notes")
         data = _load()
         data["last_research"] = now
         data["next_research"] = now + HOURS * 3600
         _save(data)
-        kind = "strategy" if use_strategy else "market"
-        print(f"LEARNED {len(found)} {kind} notes")
     except Exception as e:
         data = _load()
-        data["next_research"] = time.time() + 3600
+        if learned:
+            data["last_research"] = now
+            data["next_research"] = now + HOURS * 3600
+        else:
+            data["next_research"] = time.time() + (300 if force else 3600)
         _save(data)
         print("eye research failed:", type(e).__name__, str(e)[:120])
+        if force and learned == 0:
+            raise
     return _load()
+
+
+def _tune_fingerprint():
+    keys = (
+        "min_sources", "entry_score", "max_change_5m", "max_new_entries_per_scan",
+        "early_cut_x", "early_cut_min",
+    )
+    return {k: tune.value(k, None) for k in keys}
+
+
+async def full_optimize(session=None, complete=None, max_moves=5):
+    """Force cloud Anthropic Scout research, apply several grow steps, then Anthropic review."""
+    if complete is None and not os.getenv("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY required for full optimize")
+    started = time.time()
+    staff()
+    await research(session=session, complete=complete, force=True, both=True)
+    moves = []
+    for _ in range(max(1, min(8, int(max_moves)))):
+        before = _tune_fingerprint()
+        await grow(session)
+        after = _tune_fingerprint()
+        growth = (_load().get("growth") or [{}])[0]
+        did = str(growth.get("did") or "")
+        if before != after:
+            moves.append(did[:180])
+            continue
+        if did and "Kept the rules" not in did and "stay paused" not in did:
+            moves.append(did[:180])
+        break
+    await review(session=session, complete=complete)
+    staff()
+    data = _load()
+    summary = {
+        "at": deskio.stamp(),
+        "seconds": round(time.time() - started, 1),
+        "moves": moves,
+        "move_count": len(moves),
+        "settings": _tune_fingerprint(),
+        "closes": len(_closed_rows()),
+        "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
+        "provider": "anthropic-cloud",
+    }
+    data["last_optimize"] = summary
+    _save(data)
+    print("EYE FULL OPTIMIZE", summary["move_count"], "moves", summary["settings"])
+    return {**public(), "last_optimize": summary}
 
 
 async def review(session=None, complete=None):
@@ -1325,4 +1389,9 @@ def public():
         "may_hire": MAY_HIRE,
         "strategy": strategy_line(),
         "assistants": data.get("assistants") or [],
+        "last_research": data.get("last_research") or 0,
+        "next_research": data.get("next_research") or 0,
+        "last_optimize": data.get("last_optimize") or None,
+        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
     }
