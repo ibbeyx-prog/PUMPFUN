@@ -1071,13 +1071,14 @@ def _grow_once(ids, recent, market, brief=None):
             return f"Tightened the 5-minute chase cap to {int(nxt)}%."
 
     tight = (
-        _current("min_sources", 1) >= 3
-        and _current("entry_score", 60) >= 80
+        _current("entry_score", 60) >= 80
         and tune.value("early_cut_x", None) is not None
+        and (_current("min_sources", 1) >= 3 or _current("entry_score", 60) >= 85)
     )
     # A tight cold book pauses before climbing the score any further.
+    # Score 85+ with an early cut counts as tight even on the 2-source paper rule.
     if (not paused and tight and book["wr"] is not None and book["wr"] < 0.18
-            and (recent_wr is None or recent_wr < 0.15)
+            and (recent_wr is None or recent_wr < 0.25)
             and ("pause" in ids or book["wr"] < 0.16 or _current("entry_score", 60) >= 85)):
         if _apply("max_new_entries_per_scan", 0,
                   f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won after a tight book. Pause new entries."):
