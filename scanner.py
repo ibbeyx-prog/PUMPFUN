@@ -593,8 +593,15 @@ def public(c, score, decision, note):
     }
 
 
+def entry_cooldown_sec():
+    minutes = tune.value("entry_cooldown_min", None)
+    if minutes is None:
+        minutes = cfg("entry_cooldown_min", 180)
+    return float(minutes) * 60
+
+
 def bought_recently(mint):
-    cool = float(cfg("entry_cooldown_min", 180)) * 60
+    cool = entry_cooldown_sec()
     if not os.path.exists(ct.TRADES):
         return False
     now = time.time()
@@ -724,7 +731,7 @@ async def scan_loop(eng, session, status):
                 continue
             block = live.lab_entry_block(row.get("score"))
             if block:
-                if time.time() - _LAB_SKIPPED.get(mint, 0) > float(cfg("entry_cooldown_min", 180)) * 60:
+                if time.time() - _LAB_SKIPPED.get(mint, 0) > entry_cooldown_sec():
                     _LAB_SKIPPED[mint] = time.time()
                     eng.log("SKIP", mint, "+".join(row["sources"]), note=block)
                 continue
