@@ -318,7 +318,7 @@ async def research(session=None, complete=None, force=False, both=False):
 def _tune_fingerprint():
     keys = (
         "min_sources", "entry_score", "max_change_5m", "max_new_entries_per_scan",
-        "early_cut_x", "early_cut_min",
+        "early_cut_x", "early_cut_min", "entry_cooldown_min",
     )
     return {k: tune.value(k, None) for k in keys}
 
@@ -529,10 +529,23 @@ def improvements(rows=None):
             "text": f"Only {len(wins) / n:.0%} of {n} closes won. Pass names under a score of {bar}.",
         })
     if len(fades) / n >= 0.55 and tune.value("early_cut_x", None) is not None:
+        cut = tune.value("early_cut_x", 0.75)
         recs.append({
             "id": "cut_harder",
             "label": "Cut faster",
-            "text": f"{len(fades)} of {n} closes still fade under 1x. Cut at 0.75x after 8 minutes.",
+            "text": (
+                f"{len(fades)} of {n} closes still fade under 1x. "
+                + ("Cut at 0.70x after 8 minutes." if float(cut) <= 0.75 else "Cut at 0.75x after 8 minutes.")
+            ),
+        })
+    if n >= tune.REVIEW_CLOSES and len(wins) / n < 0.18:
+        recs.append({
+            "id": "probe",
+            "label": "Probe, don't spray",
+            "text": (
+                f"Only {len(wins) / n:.0%} of {n} closes won. "
+                "Keep one high-bar entry every 12 hours instead of pausing the book."
+            ),
         })
     ladder = [r for r in wins if "ladder" in (r.get("note") or "")]
     if wins and len(ladder) / len(wins) >= 0.4:
@@ -542,7 +555,7 @@ def improvements(rows=None):
             "text": f"{len(ladder)} of {len(wins)} winners paid on the ladder. Hold a trade above entry and sell into 2x, 3.5x, and 5x.",
         })
     paused = tune.value("max_new_entries_per_scan", 1) == 0
-    if n >= tune.REVIEW_CLOSES and len(wins) / n < 0.18 and not paused:
+    if n >= tune.REVIEW_CLOSES and len(wins) / n < 0.12 and not paused:
         recs.append({
             "id": "pause",
             "label": "Trade less",
@@ -810,8 +823,13 @@ def strategy_line():
     ]
     if cut is not None:
         bits.append(f"early cut {float(cut):g}x after {int(v.get('early_cut_min') or 10)}m")
+    cool = int(v.get("entry_cooldown_min") or 180)
+    if cool > 180:
+        bits.append(f"{cool // 60}h between entries")
     if paused:
         bits.append("new entries paused")
+    elif int(v.get("entry_score") or 0) >= 90 or cool >= 720:
+        bits.append("probe mode")
     return (
         f"Paper entry: {', '.join(bits)}. "
         "A bust does not rotate the book. The Lab's shadow books have to name a winner first."
@@ -937,6 +955,18 @@ def lab_improvements(brief=None):
     return out[:4]
 
 
+def _lab_researching(brief):
+    """True while Lab is still looking. False only after it names no edge or a cold regime."""
+    if not brief:
+        return True
+    if brief.get("regime_pause"):
+        return False
+    verdict = brief.get("verdict") or ""
+    if verdict in ("No edge", "Costs only"):
+        return False
+    return True
+
+
 def _score_floor_from_lab(brief):
     paying = set((brief or {}).get("paying_buckets") or [])
     losing = set((brief or {}).get("losing_buckets") or [])
@@ -1044,14 +1074,16 @@ def _grow_once(ids, recent, market, brief=None):
     two = book["by"].get(2) or []
     two_wr = (sum(1 for x in two if x > 0) / len(two)) if two else None
     two_pnl = book["pnl"].get(2, 0.0)
-    if (("sources" in ids or "one_source" in ids)
+    # 3-source took 0 trades in 13,565 lab coins. Do not silence the book while Lab still explores.
+    if (not _lab_researching(brief)
+            and ("sources" in ids or "one_source" in ids)
             and _current("min_sources", 1) < 3
             and two_wr is not None and two_wr < 0.35 and two_pnl <= 0):
         if _apply("min_sources", 3,
                   f"Eye lookback: 2-source closes won {two_wr:.0%} of {len(two)} and lost {two_pnl:+.3f} SOL."):
             return "Raised min sources to 3."
 
-    if book["fades"] >= 0.55 and ("cut" in ids or "cut_harder" in ids):
+    if book["fades"] >= 0.55 and ("cut" in ids or "cut_harder" in ids or "probe" in ids):
         cut = tune.value("early_cut_x", None)
         if cut is None:
             moved = _apply("early_cut_x", 0.8, "Eye lookback: most closes lose before 1x. Cut the fade.")
@@ -1064,22 +1096,49 @@ def _grow_once(ids, recent, market, brief=None):
             _apply("early_cut_min", 8, "Eye: wait 8 minutes before that harder early cut.")
             if moved:
                 return "Tightened the early cut to 0.75x after 8 minutes."
+        elif float(cut) > 0.70:
+            moved = _apply("early_cut_x", 0.70,
+                           f"Eye probe: {book['fades']:.0%} of {book['n']} closes fade. Cut at 0.70x.")
+            _apply("early_cut_min", 8, "Eye probe: wait 8 minutes before that fastest early cut.")
+            if moved:
+                return "Probe: cut fades at 0.70x after 8 minutes."
 
     if chase >= 0.4 and _current("max_change_5m", 90) > 40:
         nxt = _current("max_change_5m", 90) - 5
         if _apply("max_change_5m", nxt, "Eye: the public scan is mostly vertical 5-minute candles."):
             return f"Tightened the 5-minute chase cap to {int(nxt)}%."
 
+    researching = _lab_researching(brief)
+    cold = book["wr"] is not None and book["wr"] < 0.18 and book["n"] >= tune.REVIEW_CLOSES
+    score = _current("entry_score", 60)
+    cut_now = tune.value("early_cut_x", None)
+    cool_now = int(_current("entry_cooldown_min", 180))
+
+    # Sustainable path on a cold book: rare high-bar probes, not a spray and not a full stop
+    # while Lab is still exploring. Pause only after Lab names no edge.
+    if cold and ("probe" in ids or "score" in ids or researching or paused):
+        if score < 90:
+            if _apply("entry_score", 90,
+                      f"Eye probe: {book['wr']:.0%} of {book['n']} closes won. Only take score 90 names."):
+                return "Probe: raised the entry score to 90. Rare high-bar paper entries only."
+        if cool_now < 720:
+            if _apply("entry_cooldown_min", 720,
+                      "Eye probe: 12 hours between paper entries so the book stops spraying."):
+                return "Probe: 12 hours between paper entries."
+        if paused and researching:
+            if _apply("max_new_entries_per_scan", 1,
+                      "Eye probe: Lab has not named No edge. Keep one high-bar paper entry."):
+                return "Probe: one high-bar paper entry per scan while Lab explores."
+
     tight = (
-        _current("entry_score", 60) >= 80
-        and tune.value("early_cut_x", None) is not None
-        and (_current("min_sources", 1) >= 3 or _current("entry_score", 60) >= 85)
+        score >= 80
+        and cut_now is not None
+        and (_current("min_sources", 1) >= 3 or score >= 85)
     )
-    # A tight cold book pauses before climbing the score any further.
-    # Score 85+ with an early cut counts as tight even on the 2-source paper rule.
-    if (not paused and tight and book["wr"] is not None and book["wr"] < 0.18
-            and (recent_wr is None or recent_wr < 0.25)
-            and ("pause" in ids or book["wr"] < 0.16 or _current("entry_score", 60) >= 85)):
+    lab_dead = not researching
+    last_dead = recent_wr is not None and recent_wr < 0.12
+    if (not paused and tight and cold
+            and (lab_dead or ("pause" in ids and last_dead and score >= 90 and cool_now >= 720))):
         if _apply("max_new_entries_per_scan", 0,
                   f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won after a tight book. Pause new entries."):
             return (
@@ -1088,7 +1147,6 @@ def _grow_once(ids, recent, market, brief=None):
             )
 
     if book["wr"] is not None and book["wr"] < 0.20 and ("score" in ids or book["wr"] < 0.18):
-        score = _current("entry_score", 60)
         if book["wr"] < 0.18 and score < 85:
             target = 85
         elif score < 70:
