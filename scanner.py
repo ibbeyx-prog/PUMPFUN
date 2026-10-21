@@ -44,6 +44,21 @@ def cfg(name, default):
     return ct.CFG.get(name, default)
 
 
+def mcap_floor():
+    return float(cfg("min_mcap_usd", 500000))
+
+
+def in_mcap_band(mcap):
+    """True only for a known market cap at or above the 500k floor. No upper cap."""
+    if mcap is None:
+        return False
+    try:
+        value = float(mcap)
+    except (TypeError, ValueError):
+        return False
+    return value >= mcap_floor()
+
+
 def num(v, default=None):
     try:
         if v is None or v == "":
@@ -454,8 +469,8 @@ def decide(c):
 
     hard = []
     mcap, liq = c["mcap"], c["liq"]
-    if mcap is not None and not (cfg("min_mcap_usd", 500000) <= mcap <= cfg("max_mcap_usd", 2000000)):
-        hard.append("mcap outside range")
+    if not in_mcap_band(mcap):
+        hard.append("mcap below 500k")
     if liq is not None and liq < cfg("min_liquidity_usd", 8000):
         hard.append("thin liquidity")
     if liq is None and "gmgn" not in src and "dexscreener" not in src:
@@ -669,10 +684,7 @@ async def scan_once(session):
 
     ranked = []
     for c in book.values():
-        if len(c["sources"]) == 1 and "pump.fun" in c["sources"] and not c["live"] and (c["mcap"] or 0) < cfg("min_mcap_usd", 500000):
-            row = public(c, 0, "skip", "pump only, below min mcap")
-            row["_price"] = c["price_sol"]
-            ranked.append(row)
+        if not in_mcap_band(c.get("mcap")):
             continue
         score, decision, note = decide(c)
         row = public(c, score, decision, note)

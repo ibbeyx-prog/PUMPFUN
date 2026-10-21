@@ -62,7 +62,7 @@ create table book_config (
   entry_cooldown_min          integer not null default 180,
   min_liquidity_usd           numeric(14,2) not null default 8000,
   min_mcap_usd                numeric(14,2) not null default 500000,
-  max_mcap_usd                numeric(14,2) not null default 2000000,
+  max_mcap_usd                numeric(14,2) not null default 0,
   min_change_5m               numeric(8,2) not null default 5,
   max_change_5m               numeric(8,2) not null default 90,
   max_rug_ratio               numeric(8,4) not null default 0.40,

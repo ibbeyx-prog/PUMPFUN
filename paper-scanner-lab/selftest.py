@@ -51,6 +51,8 @@ def test_books_and_fills():
     filters = engine.book_by_id("filters-ladder")
     assert engine.would_enter(filters, snap(score=10, sources=["pump.fun"], change_5m=0))
     assert not engine.would_enter(filters, snap(mcap=50000))
+    assert not engine.would_enter(filters, snap(mcap=None))
+    assert engine.would_enter(filters, snap(mcap=3000000))
     assert not engine.would_enter(filters, snap(note="rugcheck: rugged"))
     assert engine.would_enter(filters, snap(note="rugcheck 12"))
     harsh = engine.round_trip(1, 1, 5, 100)
