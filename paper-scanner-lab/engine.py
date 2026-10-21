@@ -172,7 +172,7 @@ def would_enter(book, snap):
     if age is not None and float(age) < 5:
         return False
     mcap = snap.get("mcap")
-    if mcap is not None and not (500000 <= float(mcap) <= 2000000):
+    if mcap is None or float(mcap) < 500000:
         return False
     liq = snap.get("liq")
     if liq is not None and float(liq) < 8000:
