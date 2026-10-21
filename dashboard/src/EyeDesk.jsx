@@ -183,7 +183,7 @@ export default function EyeDesk({ eye, phase, onOptimize, optimizing }) {
             <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">Goal</div>
             <h2 className="mt-1 text-lg font-semibold text-slate-100">Find a profitable paper strategy</h2>
             <p className="mt-1 max-w-3xl text-sm text-slate-400">
-              Scout researches the Lab and the book via cloud Anthropic. The others brief the scan, rugs, closes, and wallet risk. Eye is the only one who decides. Nobody spends.
+              Scout keeps researching on cloud Anthropic. Eye keeps the high-bar paper book open and re-optimizes about every two hours. Nobody spends.
             </p>
           </div>
           {onOptimize && (

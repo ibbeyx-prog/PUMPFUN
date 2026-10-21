@@ -25,6 +25,7 @@ BOUNDS = {
     "early_cut_x": (0.70, 0.90),
     "early_cut_min": (8, 20),
     "entry_cooldown_min": (180, 720),
+    "entry_gap_min": (15, 90),
 }
 
 

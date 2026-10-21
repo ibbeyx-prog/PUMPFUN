@@ -527,7 +527,8 @@ Environment:
 | `ANTHROPIC_API_KEY` | No | Research and review. Model is `EYE_MODEL` or `claude-sonnet-5-5` |
 | `BUBBLEMAPS_API_KEY` | No | Holder-cluster scores. The public map link works without it |
 | `EYE_MODEL` | No | Research model. Default `claude-sonnet-5-5` |
-| `EYE_RESEARCH_HOURS` | No | Hours between successful research passes. Default 24 |
+| `EYE_RESEARCH_HOURS` | No | Hours between successful research passes. Default 2 |
+| `EYE_OPTIMIZE_HOURS` | No | Hours between full Anthropic research+optimize passes. Default 2 |
 | `LAB_URL`, `LAB_KEY` | No | Lab report used as the live gate. Missing values keep live queueing closed |
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |

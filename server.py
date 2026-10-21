@@ -89,9 +89,7 @@ async def _eye(session):
     while True:
         wait = 600
         try:
-            eye.staff()
-            await eye.research()
-            data = await eye.grow(session)
+            data = await eye.keep_running(session)
             stale = any(
                 "nothing to put in front of you" in (a.get("last") or "")
                 for a in (data.get("assistants") or [])
@@ -101,7 +99,6 @@ async def _eye(session):
             if not retried and "has not posted names" in (data.get("market") or ""):
                 retried = True
                 wait = 50
-            await eye.review()
         except Exception as e:
             print("eye failed:", type(e).__name__, e)
         await asyncio.sleep(wait)
