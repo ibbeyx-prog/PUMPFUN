@@ -50,7 +50,8 @@ ROSTER = (
         "powers": ["read_trades", "halt_live", "write_note"],
     },
 )
-HOURS = float(os.getenv("EYE_RESEARCH_HOURS", "24"))
+HOURS = float(os.getenv("EYE_RESEARCH_HOURS", "2"))
+OPTIMIZE_HOURS = float(os.getenv("EYE_OPTIMIZE_HOURS", "2"))
 
 
 def _load():
@@ -318,7 +319,7 @@ async def research(session=None, complete=None, force=False, both=False):
 def _tune_fingerprint():
     keys = (
         "min_sources", "entry_score", "max_change_5m", "max_new_entries_per_scan",
-        "early_cut_x", "early_cut_min", "entry_cooldown_min",
+        "early_cut_x", "early_cut_min", "entry_cooldown_min", "entry_gap_min",
     )
     return {k: tune.value(k, None) for k in keys}
 
@@ -362,6 +363,29 @@ async def full_optimize(session=None, complete=None, max_moves=5):
     return {**public(), "last_optimize": summary}
 
 
+async def keep_running(session=None):
+    """Staff, take high-bar paper trades, and keep Anthropic research/optimize on a loop."""
+    staff()
+    now = time.time()
+    data = _load()
+    due = now >= float(data.get("next_optimize") or 0)
+    if due and os.getenv("ANTHROPIC_API_KEY"):
+        try:
+            await full_optimize(session=session)
+        except Exception as e:
+            print("eye optimize failed:", type(e).__name__, str(e)[:120])
+            await grow(session)
+        data = _load()
+        data["next_optimize"] = time.time() + OPTIMIZE_HOURS * 3600
+        _save(data)
+        staff()
+        return _load()
+    await research(session=session)
+    await grow(session)
+    staff()
+    return _load()
+
+
 async def review(session=None, complete=None):
     if complete is None and not os.getenv("ANTHROPIC_API_KEY"):
         return _load()
@@ -396,6 +420,13 @@ async def review(session=None, complete=None):
                 continue
             if key == "min_sources" and number < current_n:
                 continue
+        if _lab_researching(live.lab_brief()):
+            if key == "max_new_entries_per_scan" and number < 1:
+                continue
+            if key == "entry_score" and number > 80:
+                number = 80
+            if key == "entry_cooldown_min" and number > 180:
+                number = 180
         data = tune._load()
         tune._set(data, key, number, "eye review")
         data["changes"] = data["changes"][:100]
@@ -544,7 +575,7 @@ def improvements(rows=None):
             "label": "Probe, don't spray",
             "text": (
                 f"Only {len(wins) / n:.0%} of {n} closes won. "
-                "Keep one high-bar entry every 12 hours instead of pausing the book."
+                "Keep high-bar 80+ entries, one new trade every 45 minutes, and keep researching."
             ),
         })
     ladder = [r for r in wins if "ladder" in (r.get("note") or "")]
@@ -825,11 +856,14 @@ def strategy_line():
         bits.append(f"early cut {float(cut):g}x after {int(v.get('early_cut_min') or 10)}m")
     cool = int(v.get("entry_cooldown_min") or 180)
     if cool > 180:
-        bits.append(f"{cool // 60}h between entries")
+        bits.append(f"{cool // 60}h same-mint cooldown")
+    gap = v.get("entry_gap_min")
+    if gap:
+        bits.append(f"{int(gap)}m between new trades")
     if paused:
         bits.append("new entries paused")
-    elif int(v.get("entry_score") or 0) >= 90 or cool >= 720:
-        bits.append("probe mode")
+    elif int(v.get("entry_score") or 0) >= 80:
+        bits.append("high-bar entries on")
     return (
         f"Paper entry: {', '.join(bits)}. "
         "A bust does not rotate the book. The Lab's shadow books have to name a winner first."
@@ -1049,6 +1083,10 @@ def _grow_once(ids, recent, market, brief=None):
     lab_did = _grow_from_lab(brief, ids)
     if lab_did:
         return lab_did
+    if _lab_researching(brief) and paused:
+        if _apply("max_new_entries_per_scan", 1,
+                  "Eye: keep taking high-bar paper trades while Lab researches."):
+            return "Opened paper entries. High-bar rules stay on while Eye researches."
 
     if book["n"] < tune.REVIEW_CLOSES:
         if chase >= 0.4 and _current("max_change_5m", 90) > 40:
@@ -1113,22 +1151,30 @@ def _grow_once(ids, recent, market, brief=None):
     score = _current("entry_score", 60)
     cut_now = tune.value("early_cut_x", None)
     cool_now = int(_current("entry_cooldown_min", 180))
+    gap_now = int(_current("entry_gap_min", 0) or 0)
 
-    # Sustainable path on a cold book: rare high-bar probes, not a spray and not a full stop
-    # while Lab is still exploring. Pause only after Lab names no edge.
-    if cold and ("probe" in ids or "score" in ids or researching or paused):
-        if score < 90:
-            if _apply("entry_score", 90,
-                      f"Eye probe: {book['wr']:.0%} of {book['n']} closes won. Only take score 90 names."):
-                return "Probe: raised the entry score to 90. Rare high-bar paper entries only."
-        if cool_now < 720:
-            if _apply("entry_cooldown_min", 720,
-                      "Eye probe: 12 hours between paper entries so the book stops spraying."):
-                return "Probe: 12 hours between paper entries."
-        if paused and researching:
+    # Keep taking revised high-bar trades while Lab researches. Score 90 found zero names.
+    if researching:
+        if paused:
             if _apply("max_new_entries_per_scan", 1,
-                      "Eye probe: Lab has not named No edge. Keep one high-bar paper entry."):
-                return "Probe: one high-bar paper entry per scan while Lab explores."
+                      "Eye: keep taking high-bar paper trades while Lab researches."):
+                return "Opened paper entries. High-bar rules stay on while Eye researches."
+        if score > 80:
+            if _apply("entry_score", 80,
+                      "Eye: score 90 blocked the scan. Take 80+ names under the revised filters."):
+                return "Lowered the entry score to 80 so the scan can enter."
+        if cold and score < 80:
+            if _apply("entry_score", 80,
+                      f"Eye: {book['wr']:.0%} of {book['n']} won. Keep the 80+ bar, still trade."):
+                return "Raised the entry score to 80. High-bar paper entries stay on."
+        if gap_now < 45:
+            if _apply("entry_gap_min", 45,
+                      "Eye: at most one new paper trade every 45 minutes so the book does not spray."):
+                return "Cap: one new paper trade every 45 minutes."
+        if cool_now > 180:
+            if _apply("entry_cooldown_min", 180,
+                      "Eye: 3-hour same-mint cooldown. New names can still enter."):
+                return "Restored a 3-hour same-mint cooldown."
 
     tight = (
         score >= 80
@@ -1137,16 +1183,17 @@ def _grow_once(ids, recent, market, brief=None):
     )
     lab_dead = not researching
     last_dead = recent_wr is not None and recent_wr < 0.12
-    if (not paused and tight and cold
-            and (lab_dead or ("pause" in ids and last_dead and score >= 90 and cool_now >= 720))):
+    if (not paused and tight and cold and lab_dead
+            and ("pause" in ids or last_dead)):
         if _apply("max_new_entries_per_scan", 0,
-                  f"Eye lookback: {book['wr']:.0%} of {book['n']} closes won after a tight book. Pause new entries."):
+                  f"Eye lookback: Lab named no edge and {book['wr']:.0%} of {book['n']} won. Pause new entries."):
             return (
-                f"Paused new paper entries. {book['n']} closes won {book['wr']:.0%} "
-                f"(last {n_recent} won {recent_wr:.0%}). Resume when the last 15 win 25%."
+                f"Paused new paper entries. Lab {brief.get('verdict') if brief else 'n/a'}. "
+                f"{book['n']} closes won {book['wr']:.0%}. Resume when the last 15 win 25%."
             )
 
-    if book["wr"] is not None and book["wr"] < 0.20 and ("score" in ids or book["wr"] < 0.18):
+    if (not researching and book["wr"] is not None and book["wr"] < 0.20
+            and ("score" in ids or book["wr"] < 0.18)):
         if book["wr"] < 0.18 and score < 85:
             target = 85
         elif score < 70:
@@ -1451,6 +1498,7 @@ def public():
         "last_research": data.get("last_research") or 0,
         "next_research": data.get("next_research") or 0,
         "last_optimize": data.get("last_optimize") or None,
+        "next_optimize": data.get("next_optimize") or 0,
         "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
         "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
     }

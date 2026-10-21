@@ -600,6 +600,33 @@ def entry_cooldown_sec():
     return float(minutes) * 60
 
 
+def last_buy_age_sec():
+    if not os.path.exists(ct.TRADES):
+        return None
+    latest = None
+    with open(ct.TRADES, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("event") != "BUY":
+                continue
+            ts = deskio.parse_stamp(row.get("time"))
+            if ts is None:
+                continue
+            if latest is None or ts > latest:
+                latest = ts
+    if latest is None:
+        return None
+    return time.time() - latest
+
+
+def desk_cooling():
+    """True when the desk already opened a paper trade inside the global gap."""
+    gap = tune.value("entry_gap_min", None)
+    if gap is None:
+        return False
+    age = last_buy_age_sec()
+    return age is not None and age < float(gap) * 60
+
+
 def bought_recently(mint):
     cool = entry_cooldown_sec()
     if not os.path.exists(ct.TRADES):
@@ -729,6 +756,8 @@ async def scan_loop(eng, session, status):
             mint = row["mint"]
             if mint in eng.pos or bought_recently(mint):
                 continue
+            if desk_cooling():
+                break
             block = live.lab_entry_block(row.get("score"))
             if block:
                 if time.time() - _LAB_SKIPPED.get(mint, 0) > entry_cooldown_sec():
