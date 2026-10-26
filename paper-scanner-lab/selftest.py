@@ -199,6 +199,13 @@ def _confirm_row(book_id, n, mean, low, high, gross, costs):
             "parts": {"before_costs": gross, "costs": costs}, "paired": None}
 
 
+def test_research_windows():
+    w = lab.research_windows()
+    assert lab._iso(w["explore_from"]).startswith("2026-10-26")
+    assert lab._iso(w["freeze_at"]).startswith("2026-11-02")
+    assert lab._iso(w["confirm_until"]).startswith("2026-11-09")
+
+
 def test_verdict():
     after = lab.research_windows()["confirm_until"] + engine.TRACK_S + 1
     cal = {"calibrated": True, "shift_usd": 0.05, "why": ""}
@@ -225,5 +232,6 @@ if __name__ == "__main__":
     test_stats()
     test_desk_losses()
     test_record_scan()
+    test_research_windows()
     test_verdict()
     print("selftest ok")

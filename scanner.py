@@ -734,6 +734,7 @@ async def scan_once(session):
 
 async def scan_loop(eng, session, status):
     tune.ensure_entry_rule()
+    tune.ensure_research_hold()
     while True:
         deskio.backup_book(ct.DATA)
         tune.review()

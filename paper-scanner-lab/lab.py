@@ -516,9 +516,9 @@ def _iso(ts):
 
 def research_windows():
     return {
-        "explore_from": _when("LAB_EXPLORE_FROM", "2026-10-15T00:00:00Z"),
-        "freeze_at": _when("LAB_FREEZE_AT", "2026-10-21T00:00:00Z"),
-        "confirm_until": _when("LAB_CONFIRM_UNTIL", "2026-10-28T00:00:00Z"),
+        "explore_from": _when("LAB_EXPLORE_FROM", "2026-10-26T00:00:00Z"),
+        "freeze_at": _when("LAB_FREEZE_AT", "2026-11-02T00:00:00Z"),
+        "confirm_until": _when("LAB_CONFIRM_UNTIL", "2026-11-09T00:00:00Z"),
     }
 
 
@@ -530,16 +530,21 @@ def research(store, done, now):
     confirm = engine.Replay([ep for ep in done if w["freeze_at"] <= ep["started_at"] < w["confirm_until"]])
     explore_rows = engine.run_books(explore)
     leaders = engine.pick_leaders(explore_rows)
+    w_iso = {k: _iso(v) for k, v in w.items()}
     try:
         frozen = json.loads(store.meta("frozen_picks") or "null")
     except ValueError:
         frozen = None
+    if isinstance(frozen, dict) and frozen.get("windows") != w_iso:
+        frozen = None
+        store.set_meta("frozen_picks", "null")
     # Wait until the last explore-week coin has finished its 4-hour window.
     if frozen is None and now >= w["freeze_at"] + engine.TRACK_S:
         frozen = {
             "at": _iso(now),
             "picks": leaders,
             "tried": len(engine.BOOKS),
+            "windows": w_iso,
             "explore": {
                 r["id"]: {"n": r["n"], "mean": r["mean"], "paired": r["paired"]} for r in explore_rows
             },

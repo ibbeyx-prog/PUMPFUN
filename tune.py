@@ -128,8 +128,80 @@ def _wr(xs):
     return sum(1 for x in xs if x > 0) / len(xs) if xs else None
 
 
+HOLD_ID = "research-hold-2026-10-26"
+HOLD_DAYS = 14
+HOLD_RULES = {
+    "min_sources": 2,
+    "entry_score": 80,
+    "max_change_5m": 45,
+    "early_cut_x": 0.70,
+    "early_cut_min": 8,
+    "entry_cooldown_min": 180,
+    "entry_gap_min": 45,
+}
+
+
 def locked():
     return bool(_load().get("strategy_locked"))
+
+
+def research_hold_until():
+    try:
+        return float(_load().get("research_hold_until") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def research_hold_active():
+    return research_hold_until() > time.time()
+
+
+def may_edit(name):
+    """During the research hold, only the Lab freeze switch may move."""
+    if locked() and name != "max_new_entries_per_scan":
+        return False
+    if research_hold_active() and name != "max_new_entries_per_scan":
+        return False
+    return True
+
+
+def ensure_research_hold():
+    """Lock the high-bar set for 14 days and pause new paper entries until Lab freezes picks."""
+    data = _load()
+    if data.get("research_hold") == HOLD_ID:
+        return False
+    why = (
+        "14-day research hold: lock score 80 / 2 sources / 0.70x cut / 45m gap. "
+        "Pause new paper entries until Lab freezes picks. Scan still feeds Lab."
+    )
+    for name, new in HOLD_RULES.items():
+        _set(data, name, new, why)
+    _set(data, "max_new_entries_per_scan", 0, why)
+    data["research_hold"] = HOLD_ID
+    data["research_hold_until"] = time.time() + HOLD_DAYS * 86400
+    data["changes"] = data["changes"][:100]
+    _save(data)
+    return True
+
+
+def gate_entries_from_lab(has_frozen_picks):
+    """While the hold is on, entries stay off until Lab freezes at least one pick."""
+    if not research_hold_active():
+        return False
+    target = 1 if has_frozen_picks else 0
+    data = _load()
+    if data["values"].get("max_new_entries_per_scan") == target:
+        return False
+    why = (
+        "Lab froze picks. One high-bar paper entry per scan again."
+        if target else
+        "Lab has no frozen picks. Pause new paper entries. Scan still feeds Lab."
+    )
+    if not _set(data, "max_new_entries_per_scan", target, why):
+        return False
+    data["changes"] = data["changes"][:100]
+    _save(data)
+    return True
 
 
 def lock_strategy(why):
@@ -169,7 +241,7 @@ def ensure_entry_rule():
 
 def install_preset(values, why):
     """Replace the paper rules with one grind preset. A locked strategy is left alone."""
-    if locked():
+    if locked() or research_hold_active():
         return False
     data = _load()
     for name, new in values.items():
@@ -184,7 +256,7 @@ def install_preset(values, why):
 
 def review():
     """Move the paper rules toward whatever the closed trades support. One pass per new close."""
-    if locked():
+    if locked() or research_hold_active():
         return _load()
     rows = _closed_rows()
     data = _load()
