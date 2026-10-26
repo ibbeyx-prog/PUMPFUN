@@ -364,7 +364,7 @@ async def full_optimize(session=None, complete=None, max_moves=5):
 
 
 async def keep_running(session=None):
-    """Staff, take high-bar paper trades, and keep Anthropic research/optimize on a loop."""
+    """Staff, keep Anthropic research on a loop, and hold paper rules during the Lab reset."""
     staff()
     now = time.time()
     data = _load()
@@ -399,6 +399,8 @@ async def review(session=None, complete=None):
         return _load()
     blob = "\n".join(n.get("text") or "" for n in knowledge)
     settings = {} if len(_closed_rows()) < tune.REVIEW_CLOSES else (parsed.get("settings") or {})
+    if tune.research_hold_active():
+        settings = {}
     for key, value in settings.items():
         if key in LOCKED or key not in tune.BOUNDS:
             continue
@@ -420,13 +422,8 @@ async def review(session=None, complete=None):
                 continue
             if key == "min_sources" and number < current_n:
                 continue
-        if _lab_researching(live.lab_brief()):
-            if key == "max_new_entries_per_scan" and number < 1:
-                continue
-            if key == "entry_score" and number > 80:
-                number = 80
-            if key == "entry_cooldown_min" and number > 180:
-                number = 180
+        if not tune.may_edit(key):
+            continue
         data = tune._load()
         tune._set(data, key, number, "eye review")
         data["changes"] = data["changes"][:100]
@@ -675,6 +672,8 @@ def _current(name, default):
 
 
 def _apply(name, new, why):
+    if name not in tune.BOUNDS or not tune.may_edit(name):
+        return False
     data = tune._load()
     if not tune._set(data, name, new, why):
         return False
@@ -861,12 +860,14 @@ def strategy_line():
     if gap:
         bits.append(f"{int(gap)}m between new trades")
     if paused:
-        bits.append("new entries paused")
+        bits.append("new entries paused until Lab freezes picks")
     elif int(v.get("entry_score") or 0) >= 80:
         bits.append("high-bar entries on")
+    if tune.research_hold_active():
+        bits.append("rules locked 14 days")
     return (
         f"Paper entry: {', '.join(bits)}. "
-        "A bust does not rotate the book. The Lab's shadow books have to name a winner first."
+        "Scan still feeds Lab. Eye may research; it may not change the locked rules."
     )
 
 
@@ -1072,6 +1073,22 @@ def _grow_once(ids, recent, market, brief=None):
     held = _maybe_lock()
     if held:
         return held
+    tune.ensure_research_hold()
+    picks = bool(brief and brief.get("frozen_picks"))
+    if tune.gate_entries_from_lab(picks):
+        if picks:
+            return "Opened one high-bar paper slot. Lab froze picks. Other rules stay locked."
+        return "Paused new paper entries until Lab freezes picks. Scan still feeds Lab."
+    if tune.research_hold_active():
+        if tune.value("max_new_entries_per_scan", 1) == 0:
+            return (
+                "Rules locked for the 14-day research hold. New paper entries stay paused "
+                "until Lab freezes picks. Scout may research only."
+            )
+        return (
+            "Rules locked for the 14-day research hold. High-bar paper entries are on "
+            "because Lab froze picks. Scout may research only."
+        )
     closed = _closed_rows()
     book = _book_stats(closed)
     n_recent = len(recent)
@@ -1499,6 +1516,8 @@ def public():
         "next_research": data.get("next_research") or 0,
         "last_optimize": data.get("last_optimize") or None,
         "next_optimize": data.get("next_optimize") or 0,
+        "research_hold": tune.research_hold_active(),
+        "research_hold_until": tune.research_hold_until(),
         "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
         "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
     }

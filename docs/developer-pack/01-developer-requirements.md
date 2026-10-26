@@ -206,7 +206,7 @@ A second web page served by `paper-scanner-lab/lab.py serve`. It is not a tab on
 | Weekly verdict | Edge found, Not yet, No edge, or Costs only, with the reason, the research phase and dates, whether costs are quote-calibrated, and each frozen pick's confirm-week n, mean, interval, gross, and costs against buy-every-name and hold-SOL |
 | Outcomes | By decision, by score bucket, by source count, and by skip reason: n, mean, win rate, 2x before stop |
 | Research books | Twenty books: five entry rules (strict = 3 sources and score 70+, desk = 2 sources and 65+, loose = 2 sources and 55+, looser = 1 confirming source, filters-only = hard filters alone) times four exits (ladder 2X/3.5X/5X, cut fast at 0.85 after 8 minutes, runner = half at 2X then a 30% trail, wide stop at −50%). They ignore the desk's cooldown, one-entry-per-scan, and open-position limits. Each shows n, total, mean, win rate, 95% interval, verdict, random percentile, and a paired bootstrap difference against `filters-ladder` on the same signals (a skipped signal counts as $0). Above them is `desk-ladder-real`, the desk ladder with one entry per scan and at most five open, which feeds the live gate |
-| Explore and confirm weeks | Explore week (default Oct 15 to Oct 21 UTC) per-book paired results and provisional leaders. Four hours after the freeze, the top 3 by paired difference with 30 or more trades are stored once in `meta.frozen_picks` with the count of books tried, and never recomputed. The confirm week (to Oct 28) scores only those picks. Dates come from `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, and `LAB_CONFIRM_UNTIL` |
+| Explore and confirm weeks | Explore week (default Oct 26 to Nov 2 UTC) per-book paired results and provisional leaders. Four hours after the freeze, the top 3 by paired difference with 30 or more trades are stored once in `meta.frozen_picks` with the count of books tried, and never recomputed. The confirm week (to Nov 9) scores only those picks. A freeze from an older window is cleared. Dates come from `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, and `LAB_CONFIRM_UNTIL` |
 | Jupiter quotes | Quote rows against desk fills (target 95% coverage), median and p90 gap per side, and no-route share. With 30 good quotes per side, the summed positive median gaps times the ticket become the per-trade cost shift used by the verdict |
 | Diagnosis | Which of three problems the book has: signal is weak, costs eat a real edge, or exits give gains back. Each says looks like it, does not, or too little data, with its evidence |
 | Profit and loss per trade | For each book, ticket size, and baseline: mean dollars from price move, stop gaps, slippage, the 1% fee, and the $0.20 per transaction, summing to net, plus gross (move and stop gap) and cost drag. Also median peak, median close multiple, and the share that gave back gains |
@@ -533,7 +533,7 @@ Environment:
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |
 
-Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the lab page password), `DATA_DIR` (`/data`), optional `ANTHROPIC_API_KEY` for hypotheses, and optional `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, `LAB_CONFIRM_UNTIL` (UTC `YYYY-MM-DDTHH:MM:SSZ`; defaults Oct 15, Oct 21, Oct 28, 2026).
+Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the lab page password), `DATA_DIR` (`/data`), optional `ANTHROPIC_API_KEY` for hypotheses, and optional `LAB_EXPLORE_FROM`, `LAB_FREEZE_AT`, `LAB_CONFIRM_UNTIL` (UTC `YYYY-MM-DDTHH:MM:SSZ`; defaults Oct 26, Nov 2, Nov 9, 2026).
 
 ## 7a. Storage, time, and deployment
 
@@ -556,7 +556,7 @@ Lab environment: `SCANNER_URL`, `DASH_TOKEN` (the desk's token), `LAB_KEY` (the 
 | Known issue | Birdeye trending returns HTTP 400 on every scan, so Birdeye adds no confirmation. Check `BIRDEYE_API_KEY` and the request parameters |
 | Live trading | Off. No Phantom order has been queued |
 
-Research timeline: explore week Oct 15 to Oct 21 UTC, picks freeze 4 hours after Oct 21 00:00, confirm week to Oct 28, verdict on the lab page from Oct 28.
+Research timeline: explore week Oct 26 to Nov 2 UTC, picks freeze 4 hours after Nov 2 00:00, confirm week to Nov 9, verdict on the lab page from Nov 9. The paper desk locks high-bar rules for 14 days and pauses new entries until Lab freezes picks.
 
 ## 7b. Not built yet
 
