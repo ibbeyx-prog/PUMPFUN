@@ -326,6 +326,9 @@ def _tune_fingerprint():
 
 async def full_optimize(session=None, complete=None, max_moves=5):
     """Force cloud Anthropic Scout research, apply several grow steps, then Anthropic review."""
+    tune.ensure_project_stopped()
+    if tune.project_stopped():
+        raise RuntimeError("project stopped — research and optimize are off")
     if complete is None and not os.getenv("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY required for full optimize")
     started = time.time()
@@ -365,6 +368,27 @@ async def full_optimize(session=None, complete=None, max_moves=5):
 
 async def keep_running(session=None):
     """Staff, keep Anthropic research on a loop, and hold paper rules during the Lab reset."""
+    tune.ensure_project_stopped()
+    live.halt("project stopped")
+    if tune.project_stopped():
+        staff()
+        data = _load()
+        data["market"] = (
+            "Project stopped. No new paper entries, no Anthropic research loop, live off. "
+            "Pause or delete the Railway services to stop hosting costs."
+        )
+        if not data.get("project_stop_noted"):
+            data["project_stop_noted"] = True
+            _save(data)
+            add_note(
+                "trades",
+                "Project stopped after tests found no durable edge. Desk idle.",
+                "project stop",
+            )
+        else:
+            _save(data)
+        print("EYE project stopped — idle")
+        return public()
     staff()
     now = time.time()
     data = _load()
@@ -837,6 +861,11 @@ def _profitable(closed):
 
 
 def strategy_line():
+    if tune.project_stopped():
+        return (
+            "Project stopped. Paper entries off, Anthropic research off, live off. "
+            "Tests did not find a durable edge — pause Railway to end hosting spend."
+        )
     if tune.locked():
         return "Sticking with this strategy. The current run is paying, so Eye is not changing the rules."
     data = tune._load()
@@ -1073,6 +1102,13 @@ def _grow_once(ids, recent, market, brief=None):
     held = _maybe_lock()
     if held:
         return held
+    tune.ensure_project_stopped()
+    if tune.project_stopped():
+        live.halt("project stopped")
+        return (
+            "Project stopped. No new paper entries, no research loop, live off. "
+            "Pause Railway services to stop hosting costs."
+        )
     tune.ensure_research_hold()
     picks = bool(brief and brief.get("frozen_picks"))
     if tune.gate_entries_from_lab(picks):
@@ -1507,9 +1543,9 @@ def public():
         "growth": (data.get("growth") or [])[:8],
         "market": data.get("market") or "",
         "lab": brief,
-        "trading": True,
+        "trading": not tune.project_stopped(),
         "paper": True,
-        "may_hire": MAY_HIRE,
+        "may_hire": MAY_HIRE and not tune.project_stopped(),
         "strategy": strategy_line(),
         "assistants": data.get("assistants") or [],
         "last_research": data.get("last_research") or 0,
@@ -1518,6 +1554,7 @@ def public():
         "next_optimize": data.get("next_optimize") or 0,
         "research_hold": tune.research_hold_active(),
         "research_hold_until": tune.research_hold_until(),
-        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "project_stopped": tune.project_stopped(),
+        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")) and not tune.project_stopped(),
         "model": os.getenv("EYE_MODEL", "claude-sonnet-5-5"),
     }

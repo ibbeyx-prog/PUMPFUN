@@ -529,6 +529,7 @@ Environment:
 | `EYE_MODEL` | No | Research model. Default `claude-sonnet-5-5` |
 | `EYE_RESEARCH_HOURS` | No | Hours between successful research passes. Default 2 |
 | `EYE_OPTIMIZE_HOURS` | No | Hours between full Anthropic research+optimize passes. Default 2 |
+| `PROJECT_STOPPED` | No | `1` / `true` forces a hard stop: no paper entries, no Anthropic loop, live off |
 | `LAB_URL`, `LAB_KEY` | No | Lab report used as the live gate. Missing values keep live queueing closed |
 | `LIVE_MAX_TRADE_USD`, `LIVE_MAX_EXPOSURE_USD`, `LIVE_DAILY_LOSS_USD` | No | Live caps |
 | `PORT` | Platform | HTTP port |

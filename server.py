@@ -69,7 +69,11 @@ def wallets_stale():
 async def supervisor(app):
     global ENG
     ENG = ct.Paper()
-    live.halt("paper mode")
+    import tune
+    tune.ensure_project_stopped()
+    live.halt("project stopped" if tune.project_stopped() else "paper mode")
+    if tune.project_stopped():
+        STATUS["phase"] = "project stopped"
     session = aiohttp.ClientSession()
     asyncio.create_task(guard("manage", lambda: ENG.manage(session)))
     asyncio.create_task(guard("scan", lambda: scanner.scan_loop(ENG, session, STATUS)))
@@ -89,16 +93,21 @@ async def _eye(session):
     while True:
         wait = 600
         try:
-            data = await eye.keep_running(session)
-            stale = any(
-                "nothing to put in front of you" in (a.get("last") or "")
-                for a in (data.get("assistants") or [])
-            )
-            if stale and "has not posted names" not in (data.get("market") or ""):
-                eye.staff()
-            if not retried and "has not posted names" in (data.get("market") or ""):
-                retried = True
-                wait = 50
+            import tune
+            if tune.project_stopped():
+                await eye.keep_running(session)
+                wait = 3600
+            else:
+                data = await eye.keep_running(session)
+                stale = any(
+                    "nothing to put in front of you" in (a.get("last") or "")
+                    for a in (data.get("assistants") or [])
+                )
+                if stale and "has not posted names" not in (data.get("market") or ""):
+                    eye.staff()
+                if not retried and "has not posted names" in (data.get("market") or ""):
+                    retried = True
+                    wait = 50
         except Exception as e:
             print("eye failed:", type(e).__name__, e)
         await asyncio.sleep(wait)

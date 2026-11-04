@@ -139,10 +139,22 @@ HOLD_RULES = {
     "entry_cooldown_min": 180,
     "entry_gap_min": 45,
 }
+STOP_ID = "project-stopped-2026-11-04"
+STOP_WHY = (
+    "Project stopped after paper and Lab tests found no durable edge. "
+    "No new paper entries, no Anthropic research loop, live stays off."
+)
 
 
 def locked():
     return bool(_load().get("strategy_locked"))
+
+
+def project_stopped():
+    """Hard stop: operator closed the experiment. Env PROJECT_STOPPED=1 also forces it."""
+    if (os.getenv("PROJECT_STOPPED") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(_load().get("project_stopped"))
 
 
 def research_hold_until():
@@ -153,15 +165,43 @@ def research_hold_until():
 
 
 def research_hold_active():
+    if project_stopped():
+        return True
     return research_hold_until() > time.time()
 
 
 def may_edit(name):
-    """During the research hold, only the Lab freeze switch may move."""
+    """During the research hold or project stop, only the Lab freeze switch may move."""
+    if project_stopped():
+        return False
     if locked() and name != "max_new_entries_per_scan":
         return False
     if research_hold_active() and name != "max_new_entries_per_scan":
         return False
+    return True
+
+
+def ensure_project_stopped():
+    """Permanent stop: pause entries, lock edits, leave live off. Idempotent."""
+    data = _load()
+    if data.get("project_stopped") and data.get("project_stop_id") == STOP_ID:
+        if data["values"].get("max_new_entries_per_scan") != 0:
+            _set(data, "max_new_entries_per_scan", 0, STOP_WHY)
+            data["changes"] = data["changes"][:100]
+            _save(data)
+            return True
+        return False
+    for name, new in HOLD_RULES.items():
+        _set(data, name, new, STOP_WHY)
+    _set(data, "max_new_entries_per_scan", 0, STOP_WHY)
+    data["project_stopped"] = True
+    data["project_stop_id"] = STOP_ID
+    data["project_stopped_at"] = deskio.stamp()
+    data["research_hold"] = HOLD_ID
+    data["research_hold_until"] = time.time() + 3650 * 86400
+    data["strategy_locked"] = True
+    data["changes"] = data["changes"][:100]
+    _save(data)
     return True
 
 
@@ -186,6 +226,14 @@ def ensure_research_hold():
 
 def gate_entries_from_lab(has_frozen_picks):
     """While the hold is on, entries stay off until Lab freezes at least one pick."""
+    if project_stopped():
+        data = _load()
+        if data["values"].get("max_new_entries_per_scan") == 0:
+            return False
+        _set(data, "max_new_entries_per_scan", 0, STOP_WHY)
+        data["changes"] = data["changes"][:100]
+        _save(data)
+        return True
     if not research_hold_active():
         return False
     target = 1 if has_frozen_picks else 0
