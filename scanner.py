@@ -734,9 +734,20 @@ async def scan_once(session):
 
 async def scan_loop(eng, session, status):
     tune.ensure_entry_rule()
+    tune.ensure_project_stopped()
     tune.ensure_research_hold()
     while True:
         deskio.backup_book(ct.DATA)
+        tune.ensure_project_stopped()
+        if tune.project_stopped():
+            live.halt("project stopped")
+            STATE["candidates"] = []
+            STATE["sources"] = {}
+            STATE["scanned_at"] = time.time()
+            status["phase"] = "project stopped"
+            status["sources"] = {}
+            await asyncio.sleep(3600)
+            continue
         tune.review()
         eye.tend_wallet(eng)
         eye.choose_trade_usd()

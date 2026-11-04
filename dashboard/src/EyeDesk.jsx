@@ -180,13 +180,19 @@ export default function EyeDesk({ eye, phase, onOptimize, optimizing }) {
       <div className="border-b border-white/[0.06] px-4 py-4 sm:px-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">Goal</div>
-            <h2 className="mt-1 text-lg font-semibold text-slate-100">Find a profitable paper strategy</h2>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">
+              {eye?.project_stopped ? "Status" : "Goal"}
+            </div>
+            <h2 className="mt-1 text-lg font-semibold text-slate-100">
+              {eye?.project_stopped ? "Project stopped" : "Find a profitable paper strategy"}
+            </h2>
             <p className="mt-1 max-w-3xl text-sm text-slate-400">
-              Rules are locked for 14 days. New paper entries stay off until Lab freezes picks. Scout still researches. Scan still feeds Lab. Nobody spends.
+              {eye?.project_stopped
+                ? "Paper and Lab tests did not find a durable edge. Entries, Anthropic research, and live trading are off. Pause or delete the Railway services to stop hosting costs."
+                : "Rules are locked for 14 days. New paper entries stay off until Lab freezes picks. Scout still researches. Scan still feeds Lab. Nobody spends."}
             </p>
           </div>
-          {onOptimize && (
+          {onOptimize && !eye?.project_stopped && (
             <button
               type="button"
               disabled={optimizing || eye?.anthropic === false}
